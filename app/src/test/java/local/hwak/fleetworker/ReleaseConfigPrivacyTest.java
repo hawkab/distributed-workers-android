@@ -14,6 +14,9 @@ public class ReleaseConfigPrivacyTest {
     @Test public void trackedTemplateHasPlaceholderInfrastructureAndPublicGithubIdentity()throws Exception {
         List<ReleaseSource> sources=ReleaseSource.parse(read(root().resolve("release-sources.example.json")));
         assertTrue(java.net.URI.create(sources.get(0).url).getHost().endsWith(".invalid"));
+        String gitflicQuery=java.net.URI.create(sources.get(1).url).getRawQuery();
+        assertTrue("GitFlic raw endpoint selects a ref using commit",gitflicQuery.contains("commit=release-channel"));
+        assertFalse("GitFlic raw endpoint ignores the branch parameter",gitflicQuery.contains("branch="));
         assertEquals("manifest",sources.get(2).type);
         assertTrue(sources.get(2).url.startsWith("https://github.com/hawkab/distributed-workers-android/"));
         String ignore=read(root().resolve(".gitignore"));

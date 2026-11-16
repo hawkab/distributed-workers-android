@@ -7,7 +7,7 @@
   {
     "id": "gitflic",
     "type": "channel",
-    "url": "https://gitflic.ru/project/distributed-workers/worker-android/blob/raw?file=stable.json&branch=release-channel"
+    "url": "https://gitflic.ru/project/distributed-workers/worker-android/blob/raw?file=stable.json&commit=release-channel"
   },
   {
     "id": "github",
