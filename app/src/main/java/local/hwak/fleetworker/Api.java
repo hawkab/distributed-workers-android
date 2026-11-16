@@ -16,19 +16,32 @@ final class Api {
     static final int CONTROL_JSON_BYTES=16*1024*1024;
     static final class Failure extends IOException { final int status; Failure(int s){super("api_http_"+s);status=s;} }
     private final Configuration config;
+    interface Profiles { String header(JSONArray capabilities)throws Exception; }
     private final EffectOutbox effects;
-    Api(Configuration c,Store store){config=c;effects=new EffectOutbox(store.effectPersistence());}
+    private final Profiles profiles;
+    private final JSONArray capabilities;
+    Api(Configuration c,Store store,JSONArray capabilities,Profiles profiles){config=c;effects=new EffectOutbox(store.effectPersistence());this.capabilities=capabilities;this.profiles=profiles;}
+    static boolean carriesProfile(String path){return path.equals("/v1/workers/connect")||path.equals("/v1/workers/heartbeat")||path.equals("/v1/jobs/claim");}
+    static String profileHeader(String path,JSONObject body,JSONArray defaults,Profiles profiles)throws Exception {
+        if(!carriesProfile(path))return null;
+        JSONArray advertised=body.optJSONArray("capabilities");
+        return profiles.header(advertised==null?defaults:advertised);
+    }
     boolean flushEffect()throws Exception{return effects.flushOne((path,body)->post(path,body));}
     JSONObject post(String path,JSONObject body)throws Exception {
+        if(config.workerId.isEmpty()&&!path.equals("/v1/workers/connect"))throw new IllegalStateException("worker_not_connected");
+        String profile=profileHeader(path,body,capabilities,profiles);
         HttpsURLConnection c=(HttpsURLConnection)new URL(config.baseUrl+path).openConnection();
         c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setInstanceFollowRedirects(false);c.setRequestMethod("POST");c.setDoOutput(true);
         c.setRequestProperty("Authorization","Bearer "+config.token);c.setRequestProperty("Content-Type","application/json");c.setRequestProperty("Accept","application/json");
+        if(profile!=null)c.setRequestProperty("X-Worker-Profile",profile);
         byte[] raw=body.toString().getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(raw.length);
         try {try(java.io.OutputStream out=c.getOutputStream()){out.write(raw);}int status=c.getResponseCode();if(status==204)return null;if(status!=200)throw new Failure(status);try(InputStream in=c.getInputStream()){return new JSONObject(read(in));}}
         finally {c.disconnect();}
     }
     static String read(InputStream in)throws IOException {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];for(int n;(n=in.read(b))!=-1;)out.write(b,0,n);return out.toString(StandardCharsets.UTF_8.name());}
     NetworkOperations.Gateway networkGateway(JSONObject job,BooleanSupplier cancelled) {
+        if(config.workerId.isEmpty())throw new IllegalStateException("worker_not_connected");
         return new NetworkOperations.Gateway() {
             private volatile HttpsURLConnection active;
             private JSONObject identity()throws Exception{return new JSONObject().put("worker_id",config.workerId).put("attempt_id",job.getString("attempt_id")).put("fencing_token",job.get("fencing_token"));}

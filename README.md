@@ -12,7 +12,7 @@ included Gradle wrapper:
 
 ```
 JAVA_HOME=/path/to/jdk21 ./gradlew :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease \
-  -PworkerVersionCode=11 -PworkerVersionName=0.4.1
+  -PworkerVersionCode=12 -PworkerVersionName=0.5.0
 ```
 
 Builds require no production configuration or secrets. `preparePublicAssets`
@@ -42,7 +42,8 @@ main operator; this project does not silently initiate a first install.
 authorized ADB shell. It accepts explicit broadcasts with these actions:
 
 - `local.hwak.fleetworker.CONFIGURE`: extras `base_url` (HTTPS including optional
-  prefix), `worker_id`, `token`. Credentials are written to private preferences;
+  prefix) and `token`; `worker_id` is optional for legacy configuration. A device
+  or enrollment token is accepted. Credentials are written to private preferences;
   neither status nor logs returns the token.
 - `local.hwak.fleetworker.CONFIGURE_RELEASES`: extra `release_sources` containing
   the public source array below. The entire chain is validated and saved locally;
@@ -59,6 +60,28 @@ authorized ADB shell. It accepts explicit broadcasts with these actions:
 start if Android restricts a start from the configuration receiver. No Activity
 or permission prompt is launched. POST_NOTIFICATIONS denial does not stop the
 worker; the mandatory foreground notification is still supplied to Android.
+
+## Server identity and resource profile
+
+Before heartbeats, claims or resuming local work, the service authenticates with
+`POST /v1/workers/connect` and persists the returned stable `worker_id` using a
+synchronous preferences commit. A token-only initial configuration contains no
+client-generated identifier. Existing device tokens keep their legacy IDs.
+A changed server ID cannot replace an identity with pending work; results and
+checkpoints stay intact. A failed durable write blocks queue use and the next
+connection reconciles the same credential. Credentials changed during an in-flight
+connection cannot be overwritten by its old response.
+
+Connect, worker heartbeat and claim include `X-Worker-Profile`: unpadded base64url
+of compact UTF-8 JSON schema1. Body capabilities and header capabilities match.
+Binary chunks, job heartbeats, effects and completions do not repeatedly send the
+profile. It reports CPU counts from Runtime/process affinity, OS RAM with available
+memory bounded by the application's actual heap budget, and total/available bytes
+on the private state filesystem via StatFs. Filesystem paths, hostname, model,
+serial and other device identifiers are not sent. Unknown values remain null.
+Android does not reliably expose GPU compute units or VRAM through these APIs:
+`gpu_status` is `unknown`, `gpus` is empty, and unified memory is not guessed.
+These measurements describe current capacity; they introduce no job deadline.
 
 ## Jobs and durability
 

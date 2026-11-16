@@ -29,6 +29,7 @@ public final class WorkerService extends Service {
     private final Object wake=new Object();
     private final ExecutorService threads=Executors.newFixedThreadPool(2);
     private Store store;
+    private final WorkerConnection connection=new WorkerConnection();
     static final class Job {
         final JSONObject payload;final AtomicBoolean cancelled=new AtomicBoolean();volatile boolean leaseLost;volatile String progress="{}";volatile long nextHeartbeat;volatile NetworkOperations network;
         Job(JSONObject p){payload=p;}
@@ -54,8 +55,8 @@ public final class WorkerService extends Service {
         long backoff=1000;
         while(!closed.get()) {
             try {
-                Configuration config=Configuration.load(this);if(config==null){store.setState("worker_state","unconfigured");pause(5000);continue;}
-                Api api=new Api(config,store);
+                Configuration config=connectedConfiguration();if(config==null){store.setState("worker_state","unconfigured");pause(5000);continue;}
+                Api api=api(config);
                 if(api.flushEffect()){backoff=1000;continue;}
                 if(flushCompletion(api)) {backoff=1000;continue;}
                 JSONObject pending=store.current();if(pending!=null){runJob(api,config,pending);backoff=1000;continue;}
@@ -76,8 +77,23 @@ public final class WorkerService extends Service {
                 JSONObject job=response.getJSONObject("job");job.getString("id");job.getString("attempt_id");job.get("fencing_token");
                 store.claimed(job);backoff=1000;
             } catch(InterruptedException e){Thread.currentThread().interrupt();return;}
-            catch(Exception e){store.setState("last_error",e instanceof Api.Failure?"api_http_"+((Api.Failure)e).status:"worker_retry");store.setState("worker_state","waiting_connection");pauseQuiet(backoff);backoff=Math.min(60000,backoff*2);}
+            catch(Exception e){invalidateRejectedConnection(e);store.setState("last_error",connectionError(e,"worker_retry"));store.setState("worker_state","waiting_connection");pauseQuiet(backoff);backoff=Math.min(60000,backoff*2);}
         }
+    }
+    private Api api(Configuration configuration){return new Api(configuration,store,capabilities(),caps->WorkerProfile.collect(this,caps));}
+    private Configuration connectedConfiguration()throws Exception {
+        return connection.ensure(new WorkerConnection.Persistence(){
+            @Override public Configuration load(){return Configuration.load(WorkerService.this);}
+            @Override public Configuration assign(Configuration expected,String workerId){return Configuration.acceptServerId(WorkerService.this,expected,workerId);}
+            @Override public void policy(JSONObject response)throws Exception {if(response.has("update_poll_seconds")&&response.getLong("update_poll_seconds")>0)store.setState("update_poll_seconds",Long.toString(response.getLong("update_poll_seconds")));}
+        },configured->api(configured).post("/v1/workers/connect",new JSONObject()));
+    }
+    private void invalidateRejectedConnection(Exception error){if(error instanceof Api.Failure&&(((Api.Failure)error).status==401||((Api.Failure)error).status==403))connection.invalidate();}
+    private static String connectionError(Exception error,String fallback){
+        if(error instanceof Api.Failure)return "api_http_"+((Api.Failure)error).status;
+        String message=error.getMessage();
+        for(String known:new String[]{"pending_work_identity","configuration_changed_during_connect","identity_write_failed","connect_profile_schema_invalid","server_worker_id_required","worker_not_connected"})if(known.equals(message))return known;
+        return fallback;
     }
     private boolean flushCompletion(Api api)throws Exception {
         JSONObject completion=store.nextCompletion();if(completion==null)return false;
@@ -123,7 +139,7 @@ public final class WorkerService extends Service {
         long nextWorker=0;
         while(!closed.get()) {
             try {
-                Configuration config=Configuration.load(this);if(config==null){pause(1000);continue;}Api api=new Api(config,store);long now=System.currentTimeMillis();
+                Configuration config=connectedConfiguration();if(config==null){pause(1000);continue;}Api api=api(config);long now=System.currentTimeMillis();
                 if(now>=nextWorker) {
                     JSONObject body=new JSONObject().put("worker_id",config.workerId).put("version_code",BuildConfig.VERSION_CODE).put("version_name",BuildConfig.VERSION_NAME).put("capabilities",capabilities()).put("abis",new JSONArray(Build.SUPPORTED_ABIS)).put("state",store.getState("worker_state","starting"));
                     Job current=active.get();if(current!=null)body.put("active_job_id",current.payload.optString("id"));
@@ -134,7 +150,7 @@ public final class WorkerService extends Service {
                 Job job=active.get();if(job!=null && now>=job.nextHeartbeat)heartbeatJob(api,config,job);
                 pause(1000);
             }catch(InterruptedException e){Thread.currentThread().interrupt();return;}
-            catch(Exception e){store.setState("last_error","heartbeat_unavailable");pauseQuiet(3000);}
+            catch(Exception e){invalidateRejectedConnection(e);store.setState("last_error",connectionError(e,"heartbeat_unavailable"));pauseQuiet(3000);}
         }
     }
     private void heartbeatJob(Api api,Configuration config,Job job)throws Exception {
