@@ -27,7 +27,7 @@ jobs:
       - name: Pinned APK verification tools
         run: |
           echo "JAVA_HOME=${JAVA_HOME_21_X64:-$JAVA_HOME}" >> "$GITHUB_ENV"
-          sdkmanager 'build-tools;36.0.0' >/dev/null
+          "${ANDROID_HOME:?Android SDK is required}/cmdline-tools/latest/bin/sdkmanager" 'build-tools;36.0.0' >/dev/null
 
       - name: Publisher regression tests
         run: python3 -m unittest discover -s ci/tests -v
