@@ -15,7 +15,9 @@ import java.util.function.BooleanSupplier;
 final class Api {
     static final class Failure extends IOException { final int status; Failure(int s){super("api_http_"+s);status=s;} }
     private final Configuration config;
-    Api(Configuration c){config=c;}
+    private final EffectOutbox effects;
+    Api(Configuration c,Store store){config=c;effects=new EffectOutbox(store.effectPersistence());}
+    boolean flushEffect()throws Exception{return effects.flushOne((path,body)->post(path,body));}
     JSONObject post(String path,JSONObject body)throws Exception {
         HttpsURLConnection c=(HttpsURLConnection)new URL(config.baseUrl+path).openConnection();
         c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setInstanceFollowRedirects(false);c.setRequestMethod("POST");c.setDoOutput(true);
@@ -56,8 +58,8 @@ final class Api {
                 return request("POST",effect(id)+"/begin",identity().put("execution_id",execution).put("request",spec),null,0,false);
             }
             @Override public void finish(String id,String execution,String hash,JSONObject response,JSONArray artifacts)throws Exception {
-                JSONObject ack=request("POST",effect(id)+"/finish",identity().put("execution_id",execution).put("request_sha256",hash).put("response",response).put("artifact_ids",artifacts),null,0,true);
-                if(!ack.optBoolean("recorded")||!execution.equals(ack.optString("execution_id")))throw new IllegalStateException("effect_not_acknowledged");
+                JSONObject record=effects.record(effect(id)+"/finish",identity().put("execution_id",execution).put("request_sha256",hash).put("response",response).put("artifact_ids",artifacts));
+                effects.deliver(record,(path,body)->request("POST",path,body,null,0,true));
             }
             @Override public String create(String key,String name,String type)throws Exception {
                 JSONObject ack=request("POST","/v1/jobs/"+encode(job.getString("id"))+"/artifacts",identity().put("key",key).put("name",name).put("media_type",type),null,0,false);return ack.getString("upload_id");

@@ -93,6 +93,10 @@ Use stable `effect_id` values for every `ctx.http.request` call. GET/HEAD may
 retry after a transport failure; writes default to `never` and an uncertain
 write is not automatically repeated. Vendor-supported idempotent writes require
 its key. The effect journal reuses a completed response across worker attempts.
+Before acknowledging an HTTP result, Android persists its small response metadata
+in a SQLite effect outbox. Restart recovery delivers the same finish request
+before claiming more work or updating; it never needs to repeat the vendor
+request to recover a lost gateway acknowledgement.
 The gateway stores and verifies streamed bytes before acknowledging them;
 queue events carry the resulting reference, hash and length. Android retries
 safe transfers from the source; the portable Node/PHP adapters additionally

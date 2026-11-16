@@ -55,7 +55,8 @@ public final class WorkerService extends Service {
         while(!closed.get()) {
             try {
                 Configuration config=Configuration.load(this);if(config==null){store.setState("worker_state","unconfigured");pause(5000);continue;}
-                Api api=new Api(config);
+                Api api=new Api(config,store);
+                if(api.flushEffect()){backoff=1000;continue;}
                 if(flushCompletion(api)) {backoff=1000;continue;}
                 JSONObject pending=store.current();if(pending!=null){runJob(api,config,pending);backoff=1000;continue;}
                 if(!admitted()){store.setState("worker_state","paused_resources");pause(5000);continue;}
@@ -117,7 +118,7 @@ public final class WorkerService extends Service {
         long nextWorker=0;
         while(!closed.get()) {
             try {
-                Configuration config=Configuration.load(this);if(config==null){pause(1000);continue;}Api api=new Api(config);long now=System.currentTimeMillis();
+                Configuration config=Configuration.load(this);if(config==null){pause(1000);continue;}Api api=new Api(config,store);long now=System.currentTimeMillis();
                 if(now>=nextWorker) {
                     JSONObject body=new JSONObject().put("worker_id",config.workerId).put("version_code",BuildConfig.VERSION_CODE).put("version_name",BuildConfig.VERSION_NAME).put("capabilities",capabilities()).put("abis",new JSONArray(Build.SUPPORTED_ABIS)).put("state",store.getState("worker_state","starting"));
                     Job current=active.get();if(current!=null)body.put("active_job_id",current.payload.optString("id"));

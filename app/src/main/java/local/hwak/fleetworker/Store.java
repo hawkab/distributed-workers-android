@@ -25,7 +25,13 @@ final class Store extends SQLiteOpenHelper {
     }
     synchronized JSONObject current() { return queryJson("SELECT payload FROM current_job WHERE singleton=1",null); }
     synchronized JSONObject nextCompletion() { return queryJson("SELECT payload FROM outbox ORDER BY rowid LIMIT 1",null); }
-    synchronized boolean hasWork() { return current()!=null || nextCompletion()!=null; }
+    synchronized boolean hasWork() { return current()!=null || nextCompletion()!=null || nextEffect()!=null; }
+    synchronized JSONObject nextEffect() { return queryJson("SELECT value FROM state WHERE name GLOB 'effect_finish:*' ORDER BY rowid LIMIT 1",null); }
+    EffectOutbox.Persistence effectPersistence(){return new EffectOutbox.Persistence(){
+        public void put(String key,JSONObject record){setState("effect_finish:"+key,record.toString());}
+        public JSONObject next(){return nextEffect();}
+        public void acknowledge(String key){synchronized(Store.this){getWritableDatabase().delete("state","name=?",new String[]{"effect_finish:"+key});}}
+    };}
     synchronized void completion(JSONObject job, JSONObject completion) {
         SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
         try {
@@ -60,6 +66,7 @@ final class Store extends SQLiteOpenHelper {
             o.put("version_code",BuildConfig.VERSION_CODE).put("version_name",BuildConfig.VERSION_NAME);
             JSONObject j=current();if(j!=null)o.put("active_job_id",j.optString("id"));
             try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM outbox",null)){if(c.moveToFirst())o.put("outbox",c.getInt(0));}
+            try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM state WHERE name GLOB 'effect_finish:*'",null)){if(c.moveToFirst())o.put("effect_outbox",c.getInt(0));}
             for(String key:new String[]{"worker_state","last_error","last_job_id","last_job_status","update_state","update_version","update_session","update_source","update_source_state","update_poll_seconds","last_update_check","last_heartbeat_at"})o.put(key,getState(key,""));
         }catch(Exception ignored){ }
         return o;
