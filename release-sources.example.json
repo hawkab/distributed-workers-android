@@ -1,0 +1,18 @@
+[
+  {
+    "id": "gitea",
+    "type": "gitea",
+    "url": "https://gitea.invalid/api/v1/repos/OWNER/worker-android/releases/latest"
+  },
+  {
+    "id": "gitflic",
+    "type": "channel",
+    "url": "https://gitflic.ru/project/distributed-workers/worker-android/blob/raw?file=stable.json&branch=release-channel"
+  },
+  {
+    "id": "github",
+    "type": "manifest",
+    "url": "https://github.com/hawkab/distributed-workers-android/releases/latest/download/android-manifest.json",
+    "apk_url": "https://github.com/hawkab/distributed-workers-android/releases/latest/download/fleet-worker-android.apk"
+  }
+]

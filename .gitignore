@@ -1,0 +1,33 @@
+.gradle/
+**/build/
+local.properties
+*.log
+dist/
+
+# Per-build private endpoints; generated from CI secret or configured locally.
+app/src/main/assets/release-sources.json
+# Operator-only runtime provisioning files; never packaged in the APK.
+.local/
+mirror-git.py
+__pycache__/
+*.pyc
+*.jks
+*.keystore
+*.key
+*.pem
+.env
+.env.*
+*.local.json
+deployment.local.json
+*private*.asc
+*private*.der
+*.p12
+*.pfx
+bootstrap.json
+*.token
+*.secret
+.runner
+.ssh/
+.gnupg/
+*credentials*.json
+*secrets*.json
