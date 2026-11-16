@@ -12,7 +12,7 @@ included Gradle wrapper:
 
 ```
 JAVA_HOME=/path/to/jdk21 ./gradlew :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease \
-  -PworkerVersionCode=9 -PworkerVersionName=0.3.3
+  -PworkerVersionCode=10 -PworkerVersionName=0.4.0
 ```
 
 Builds require no production configuration or secrets. `preparePublicAssets`
@@ -62,7 +62,7 @@ worker; the mandatory foreground notification is still supplied to Android.
 
 ## Jobs and durability
 
-API paths follow `../docs/api-contract.md`. Each accepted claim is committed to
+API paths follow the separately versioned protocol repository. Each accepted claim is committed to
 SQLite (`synchronous=FULL`, WAL) before execution. The result and removal of the
 current job are committed together. Results remain in an outbox until a matching
 `job_id`/`attempt_id` receipt confirms `committed` or `candidate_saved`. The next
@@ -73,15 +73,35 @@ Operations:
 
 - `sha256`: UTF-8 `input.text` → `{ "sha256": "hex" }`.
 - `text.normalize`: Unicode NFC, collapse Unicode whitespace, trim → `{ "text": "..." }`.
-- `javascript`: Rhino **1.9.1**, interpreter-only, `run(input) -> JSON`.
+- `javascript`: Rhino **1.9.1**, interpreter-only, portable `run(input, resume, ctx) -> JSON`.
   The optional second argument `run(input, resume)` receives the last local
   checkpoint. `checkpoint(value)` synchronously persists JSON; `progress(value)`
   updates heartbeat progress. Checkpoints are also sent in heartbeat progress.
+  The third argument offers the same `ctx.checkpoint`, `ctx.progress` and
+  synchronous `ctx.http.request` interface as the portable Node.js adapter.
+  It advertises `javascript.portable.v1` for this versioned interface.
+- `http.request`: declarative HTTP on the native client, with optional per-job
+  network policy, explicit replay semantics, durable effect journal and raw
+  binary streaming. Binary responses use one 1 MiB buffer and server-side
+  artifacts; no intermediate worker-local binary file or base64 is created.
+  `artifact.stream` is advertised separately. Inline text/JSON requires an
+  explicit byte budget; overflow or invalid encoding preserves the complete
+  original response as an artifact. There is no overall HTTP/job deadline.
+  Explicit cancellation closes a stalled source connection.
+
+Use stable `effect_id` values for every `ctx.http.request` call. GET/HEAD may
+retry after a transport failure; writes default to `never` and an uncertain
+write is not automatically repeated. Vendor-supported idempotent writes require
+its key. The effect journal reuses a completed response across worker attempts.
+The gateway stores and verifies streamed bytes before acknowledging them;
+queue events carry the resulting reference, hash and length. Android retries
+safe transfers from the source; the portable Node/PHP adapters additionally
+resume sources offering authenticated Range validators.
 
 Rhino safe standard objects, a deny-all ClassShutter and a rejecting Java object
 wrapper prevent Java reflection/packages/worker credential access. Inputs and
-results cross the boundary through JSON, not Java wrappers. No Java object, HTTP
-client, filesystem or credential is exposed to scripts. Instruction observation
+results cross the boundary through JSON, not Java wrappers. The script receives JSON response metadata through the host HTTP interface.
+No Java object, raw HTTP client, filesystem or worker credential is exposed to scripts. Instruction observation
 checks explicit cancellation; it does not impose a total execution deadline.
 Stack/heap exhaustion produces a failed completion when the runtime can recover.
 Leases are renewed separately from execution; lost lease cancels further work,
@@ -173,6 +193,10 @@ Unattended installation requires Android 12/API31+ and a one-time owner-approved
 `canRequestPackageInstalls()` permission/app-op. On older APIs or missing
 permission the worker reports `blocked_*`, without opening Settings or an
 installer screen. The API34 TV is the deployment target for the real proof.
+
+The HTTP client uses OkHttp 4.12.1, including the current certificate trust fix
+without requiring a newer compile SDK. Network requests keep platform TLS
+validation enabled; worker API authentication is never forwarded to sources.
 
 PackageInstaller is explicitly set to USER_ACTION_NOT_REQUIRED. Session ID,
 expected version and hash are persisted before commit. No new job starts during

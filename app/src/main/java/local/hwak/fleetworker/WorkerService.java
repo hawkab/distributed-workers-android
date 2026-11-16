@@ -30,8 +30,9 @@ public final class WorkerService extends Service {
     private final ExecutorService threads=Executors.newFixedThreadPool(2);
     private Store store;
     static final class Job {
-        final JSONObject payload;final AtomicBoolean cancelled=new AtomicBoolean();volatile boolean leaseLost;volatile String progress="{}";volatile long nextHeartbeat;
+        final JSONObject payload;final AtomicBoolean cancelled=new AtomicBoolean();volatile boolean leaseLost;volatile String progress="{}";volatile long nextHeartbeat;volatile NetworkOperations network;
         Job(JSONObject p){payload=p;}
+        void cancel(){cancelled.set(true);NetworkOperations n=network;if(n!=null)n.cancel();}
     }
     static void start(Context c,boolean update) {
         if(update)Store.get(c).setState("update_requested","true");
@@ -39,7 +40,7 @@ public final class WorkerService extends Service {
         try {c.startForegroundService(new Intent(c,WorkerService.class));}
         catch(RuntimeException e){Store.get(c).setState("worker_state","start_required");Store.get(c).setState("last_error","foreground_start_restricted");}
     }
-    static void cancelCurrent(){WorkerService s=running;if(s!=null){Job j=s.active.get();if(j!=null)j.cancelled.set(true);}}
+    static void cancelCurrent(){WorkerService s=running;if(s!=null){Job j=s.active.get();if(j!=null)j.cancel();}}
     @Override public IBinder onBind(Intent intent){return null;}
     @Override public void onCreate(){super.onCreate();store=Store.get(this);notification();running=this;threads.execute(this::workLoop);threads.execute(this::heartbeatLoop);}
     @Override public int onStartCommand(Intent intent,int flags,int id){notification();signal();return START_STICKY;}
@@ -91,21 +92,24 @@ public final class WorkerService extends Service {
             if(control.leaseLost){store.abandonCurrent(payload.getString("id"));return;}
             Object result;
             try {
-                result=Operations.execute(payload,store.checkpoint(payload.getString("id")),control.cancelled::get,new Operations.Checkpoints(){
+                Operations.Checkpoints callbacks=new Operations.Checkpoints(){
                     @Override public void checkpoint(String json){store.checkpoint(payload.optString("id"),json);control.progress=json;}
                     @Override public void progress(String json){control.progress=json;}
-                });
+                };
+                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"));
+                result=Operations.execute(payload,store.checkpoint(payload.getString("id")),control.cancelled::get,callbacks,control.network);
             }catch(CancellationException e){
                 if(closed.get())return;if(control.leaseLost){store.abandonCurrent(payload.getString("id"));return;}
                 saveCompletion(config,payload,"failed",JSONObject.NULL,"cancelled");return;
-            }catch(Exception e){if(closed.get())return;saveCompletion(config,payload,"failed",JSONObject.NULL,"execution_"+e.getClass().getSimpleName());return;}
+            }catch(Exception e){if(closed.get())return;Throwable cause=e;java.util.Set<Throwable> seen=java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());while(cause!=null&&seen.add(cause)){if(cause instanceof NetworkOperations.Retryable)throw (NetworkOperations.Retryable)cause;if("effect_uncertain".equals(cause.getMessage())){saveCompletion(config,payload,"failed",JSONObject.NULL,"effect_uncertain");return;}cause=cause.getCause();}saveCompletion(config,payload,"failed",JSONObject.NULL,"execution_"+e.getClass().getSimpleName());return;}
             catch(StackOverflowError e){if(closed.get())return;saveCompletion(config,payload,"failed",JSONObject.NULL,"script_stack_exhausted");return;}
             catch(OutOfMemoryError e){if(closed.get())return;saveCompletion(config,payload,"failed",JSONObject.NULL,"script_memory_exhausted");return;}
             if(!closed.get())saveCompletion(config,payload,"succeeded",result,null);
-        }finally {active.compareAndSet(control,null);}
+        }finally {if(control.network!=null)control.network.close();active.compareAndSet(control,null);}
     }
     private void saveCompletion(Configuration config,JSONObject payload,String status,Object result,String code)throws Exception {
         JSONObject completion=identity(config,payload).put("job_id",payload.getString("id")).put("status",status).put("result",result);
+        Job control=active.get();if(control!=null&&control.network!=null)completion.put("artifact_ids",control.network.artifactIds());
         if(code!=null)completion.put("error",new JSONObject().put("code",code).put("message",code));
         store.completion(payload,completion);store.setState("worker_state","uploading");
     }
@@ -135,9 +139,9 @@ public final class WorkerService extends Service {
             try {
                 JSONObject response=api.post("/v1/jobs/"+path(job.payload.getString("id"))+"/heartbeat",identity(config,job.payload).put("progress",progress));
                 long delay=15000;
-                if(response!=null){if(response.optBoolean("cancel_requested"))job.cancelled.set(true);String until=response.optString("lease_until","");if(!until.isEmpty()){try{long remaining=Instant.parse(until).toEpochMilli()-System.currentTimeMillis();if(remaining>0)delay=Math.max(1000,Math.min(15000,remaining/3));}catch(Exception ignored){}}}
+                    if(response!=null){if(response.optBoolean("cancel_requested"))job.cancel();String until=response.optString("lease_until","");if(!until.isEmpty()){try{long remaining=Instant.parse(until).toEpochMilli()-System.currentTimeMillis();if(remaining>0)delay=Math.max(1000,Math.min(15000,remaining/3));}catch(Exception ignored){}}}
                 job.nextHeartbeat=System.currentTimeMillis()+delay;
-            }catch(Api.Failure e){if(e.status==404 || e.status==409){job.leaseLost=true;job.cancelled.set(true);store.setState("last_error","lease_lost");return;}throw e;}
+            }catch(Api.Failure e){if(e.status==404 || e.status==409){job.leaseLost=true;job.cancel();store.setState("last_error","lease_lost");return;}throw e;}
         }
     }
     private static JSONObject identity(Configuration c,JSONObject p)throws Exception{return new JSONObject().put("worker_id",c.workerId).put("attempt_id",p.getString("attempt_id")).put("fencing_token",p.get("fencing_token"));}
@@ -146,11 +150,11 @@ public final class WorkerService extends Service {
         if(memory.lowMemory || memory.availMem<=memory.threshold)return false;
         return Build.VERSION.SDK_INT<29 || getSystemService(PowerManager.class).getCurrentThermalStatus()<PowerManager.THERMAL_STATUS_SEVERE;
     }
-    static JSONArray capabilities(){return new JSONArray().put("sha256").put("text.normalize").put("javascript");}
+    static JSONArray capabilities(){return new JSONArray().put("sha256").put("text.normalize").put("javascript").put("javascript.portable.v1").put("http.request").put("artifact.stream");}
     private static String path(String id)throws Exception{return URLEncoder.encode(id,"UTF-8");}
     private static long parseLong(String s){try{return Long.parseLong(s);}catch(NumberFormatException e){return 0;}}
     private void signal(){synchronized(wake){wake.notifyAll();}}
     private void pause(long millis)throws InterruptedException {synchronized(wake){wake.wait(millis);}}
     private void pauseQuiet(long millis){try{pause(millis);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
-    @Override public void onDestroy(){closed.set(true);Job job=active.get();if(job!=null)job.cancelled.set(true);signal();threads.shutdownNow();running=null;super.onDestroy();}
+    @Override public void onDestroy(){closed.set(true);Job job=active.get();if(job!=null)job.cancel();signal();threads.shutdownNow();running=null;super.onDestroy();}
 }

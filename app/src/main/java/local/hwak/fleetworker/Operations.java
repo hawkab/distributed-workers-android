@@ -18,12 +18,17 @@ import org.mozilla.javascript.WrapFactory;
 
 final class Operations {
     interface Checkpoints { void checkpoint(String json); void progress(String json); }
+    interface Network { JSONObject request(JSONObject request) throws Exception; }
     static Object execute(JSONObject job,String resume,BooleanSupplier cancelled,Checkpoints checkpoints)throws Exception {
+        return execute(job,resume,cancelled,checkpoints,null);
+    }
+    static Object execute(JSONObject job,String resume,BooleanSupplier cancelled,Checkpoints checkpoints,Network network)throws Exception {
         JSONObject input=job.optJSONObject("input");if(input==null)input=new JSONObject();
         switch(job.getString("operation")) {
             case "sha256": return new JSONObject().put("sha256",hex(MessageDigest.getInstance("SHA-256").digest(input.getString("text").getBytes(StandardCharsets.UTF_8))));
             case "text.normalize": return new JSONObject().put("text",normalize(input.getString("text")));
-            case "javascript": return javascript(job.getString("script"),input,resume,cancelled,checkpoints);
+            case "javascript": return javascript(job.getString("script"),input,resume,cancelled,checkpoints,network);
+            case "http.request": if(network==null)throw new IllegalStateException("network_host_unavailable");return network.request(input);
             default: throw new IllegalArgumentException("unsupported_operation");
         }
     }
@@ -46,6 +51,9 @@ final class Operations {
     }
     static String hex(byte[] data) { StringBuilder s=new StringBuilder(data.length*2);for(byte b:data)s.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return s.toString(); }
     static Object javascript(String code,JSONObject input,String resume,BooleanSupplier cancelled,Checkpoints checkpoints)throws Exception {
+        return javascript(code,input,resume,cancelled,checkpoints,null);
+    }
+    static Object javascript(String code,JSONObject input,String resume,BooleanSupplier cancelled,Checkpoints checkpoints,Network network)throws Exception {
         ContextFactory factory=new ContextFactory() {
             @Override protected Context makeContext() {
                 Context cx=super.makeContext();cx.setOptimizationLevel(-1);cx.setLanguageVersion(Context.VERSION_ES6);
@@ -70,9 +78,26 @@ final class Operations {
             }},ScriptableObject.READONLY|ScriptableObject.PERMANENT);
             Object jsInput=parse.call(cx,scope,json,new Object[]{input.toString()});
             Object jsResume=parse.call(cx,scope,json,new Object[]{resume});
+            ScriptableObject host=(ScriptableObject)cx.newObject(scope);
+            ScriptableObject http=(ScriptableObject)cx.newObject(scope);
+            ScriptableObject.defineProperty(host,"checkpoint",ScriptableObject.getProperty(scope,"checkpoint"),ScriptableObject.READONLY|ScriptableObject.PERMANENT);
+            ScriptableObject.defineProperty(host,"progress",ScriptableObject.getProperty(scope,"progress"),ScriptableObject.READONLY|ScriptableObject.PERMANENT);
+            ScriptableObject.defineProperty(http,"request",new BaseFunction(){@Override public Object call(Context c,Scriptable s,Scriptable self,Object[] args){
+                if(network==null)throw new IllegalStateException("network_host_unavailable");
+                if(args.length!=1)throw new IllegalArgumentException("http_request_requires_one_value");
+                if(cancelled.getAsBoolean())throw new CancellationException("job_cancelled");
+                Object encoded=stringify.call(c,scope,json,new Object[]{args[0]});
+                try {
+                    JSONObject request=new JSONObject(Context.toString(encoded));
+                    if(request.optString("effect_id","").isEmpty())throw new IllegalArgumentException("stable_effect_id_required");
+                    JSONObject response=network.request(request);
+                    return parse.call(c,scope,json,new Object[]{response.toString()});
+                }catch(RuntimeException e){throw e;}catch(Exception e){throw new IllegalStateException("http_request_failed",e);}
+            }},ScriptableObject.READONLY|ScriptableObject.PERMANENT);
+            http.sealObject();ScriptableObject.defineProperty(host,"http",http,ScriptableObject.READONLY|ScriptableObject.PERMANENT);host.sealObject();
             cx.evaluateString(scope,code,"job",1,null);
             Object function=ScriptableObject.getProperty(scope,"run");if(!(function instanceof Function))throw new IllegalArgumentException("run_function_required");
-            Object result=((Function)function).call(cx,scope,scope,new Object[]{jsInput,jsResume});
+            Object result=((Function)function).call(cx,scope,scope,new Object[]{jsInput,jsResume,host});
             Object raw=stringify.call(cx,scope,json,new Object[]{result});if(Undefined.isUndefined(raw))throw new IllegalArgumentException("result_not_json");
             try{return new JSONTokener(Context.toString(raw)).nextValue();}catch(org.json.JSONException e){throw new IllegalArgumentException("result_not_json");}
         });

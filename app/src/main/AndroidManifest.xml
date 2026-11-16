@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application android:label="Fleet Worker" android:icon="@drawable/ic_worker"
-        android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/no_backup" android:usesCleartextTraffic="false" android:supportsRtl="true">
+        android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/no_backup" android:usesCleartextTraffic="true" android:supportsRtl="true">
         <service android:name=".WorkerService" android:exported="true" android:permission="android.permission.DUMP"
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

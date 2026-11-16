@@ -34,8 +34,8 @@ android {
         applicationId = "local.hwak.fleetworker"
         minSdk = 26
         targetSdk = 34
-        versionCode = providers.gradleProperty("workerVersionCode").orElse("9").get().toInt()
-        versionName = providers.gradleProperty("workerVersionName").orElse("0.3.3").get()
+        versionCode = providers.gradleProperty("workerVersionCode").orElse("10").get().toInt()
+        versionName = providers.gradleProperty("workerVersionName").orElse("0.4.0").get()
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -57,7 +57,9 @@ android {
 }
 dependencies {
     implementation("org.mozilla:rhino:1.9.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.1")
     testImplementation("org.json:json:20240303")
 }
