@@ -112,6 +112,11 @@ public final class WorkerService extends Service {
         JSONObject completion=identity(config,payload).put("job_id",payload.getString("id")).put("status",status).put("result",result);
         Job control=active.get();if(control!=null&&control.network!=null)completion.put("artifact_ids",control.network.artifactIds());
         if(code!=null)completion.put("error",new JSONObject().put("code",code).put("message",code));
+        if(JsonResultStream.utf8Length(completion.toString())>Api.CONTROL_JSON_BYTES) {
+            if(control==null||control.network==null)throw new IllegalStateException("artifact_host_unavailable");
+            completion.put("result",control.network.resultArtifact(JsonResultStream.stringify(result),payload.getString("attempt_id")));
+            completion.put("artifact_ids",control.network.artifactIds());
+        }
         store.completion(payload,completion);store.setState("worker_state","uploading");
     }
     private void heartbeatLoop() {

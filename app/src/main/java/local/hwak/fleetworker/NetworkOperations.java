@@ -61,6 +61,10 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         for(int i=0;i<retained.length();i++){String id=retained.optString(i,"");if(!id.isEmpty())artifacts.add(id);}
     }
     JSONArray artifactIds(){JSONArray result=new JSONArray();for(String id:artifacts)result.put(id);return result;}
+    JSONObject resultArtifact(String json,String attempt)throws Exception {
+        JSONObject artifact;try(JsonResultStream input=new JsonResultStream(json)){artifact=stream(input,"result/"+attempt+"/"+JsonResultStream.sha256(json),"result.json","application/json");}
+        return new JSONObject().put("artifact",artifact).put("result_format","json").put("body_error",new JSONObject().put("code","control_budget_exceeded"));
+    }
     void cancel(){Call call=activeCall;if(call!=null)call.cancel();gateway.cancel();}
     @Override public void close(){cancel();clientPool.connectionPool().evictAll();clientPool.dispatcher().executorService().shutdown();}
     private void check(){if(cancelled.getAsBoolean()||Thread.currentThread().isInterrupted())throw new CancellationException("job_cancelled");}

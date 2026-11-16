@@ -12,7 +12,7 @@ included Gradle wrapper:
 
 ```
 JAVA_HOME=/path/to/jdk21 ./gradlew :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease \
-  -PworkerVersionCode=10 -PworkerVersionName=0.4.0
+  -PworkerVersionCode=11 -PworkerVersionName=0.4.1
 ```
 
 Builds require no production configuration or secrets. `preparePublicAssets`
@@ -102,7 +102,9 @@ in a SQLite effect outbox. Restart recovery delivers the same finish request
 before claiming more work or updating. Permanent delivery conflicts retain
 the response in a separate diagnostic record so other work can proceed.
 Job artifact ownership is persisted separately from script checkpoints and
-cleared only after the completion receipt. Recovery never needs to repeat the vendor
+cleared only after the completion receipt.
+A computed result exceeding the JSON control budget is streamed as `result.json`
+with `result_format: json`; its content is the complete original JSON result. Recovery never needs to repeat the vendor
 request to recover a lost gateway acknowledgement.
 The gateway stores and verifies streamed bytes before acknowledging them;
 queue events carry the resulting reference, hash and length. Android retries
