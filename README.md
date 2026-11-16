@@ -86,7 +86,11 @@ Operations:
   artifacts; no intermediate worker-local binary file or base64 is created.
   `artifact.stream` is advertised separately. Inline text/JSON requires an
   explicit byte budget; overflow or invalid encoding preserves the complete
-  original response as an artifact. There is no overall HTTP/job deadline.
+  original response as an artifact. A response whose encoded control envelope
+  exceeds the gateway's documented 16 MiB JSON transport capacity also remains
+  a complete artifact (`control_budget_exceeded`), including original JSON
+  whitespace. This does not limit binary artifact size.
+  There is no overall HTTP/job deadline.
   Explicit cancellation closes a stalled source connection.
 
 Use stable `effect_id` values for every `ctx.http.request` call. GET/HEAD may
@@ -95,7 +99,10 @@ write is not automatically repeated. Vendor-supported idempotent writes require
 its key. The effect journal reuses a completed response across worker attempts.
 Before acknowledging an HTTP result, Android persists its small response metadata
 in a SQLite effect outbox. Restart recovery delivers the same finish request
-before claiming more work or updating; it never needs to repeat the vendor
+before claiming more work or updating. Permanent delivery conflicts retain
+the response in a separate diagnostic record so other work can proceed.
+Job artifact ownership is persisted separately from script checkpoints and
+cleared only after the completion receipt. Recovery never needs to repeat the vendor
 request to recover a lost gateway acknowledgement.
 The gateway stores and verifies streamed bytes before acknowledging them;
 queue events carry the resulting reference, hash and length. Android retries

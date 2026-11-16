@@ -41,6 +41,7 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         String create(String key,String name,String mediaType)throws Exception;
         void chunk(String upload,long offset,byte[] bytes,int length)throws Exception;
         JSONObject seal(String upload,long length,String hash)throws Exception;
+        default boolean inlineFits(String execution,String requestHash,JSONObject response,JSONArray artifacts)throws Exception{return true;}
         void cancel();
     }
     private final Gateway gateway;
@@ -49,9 +50,15 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
     private final JSONObject policy;
     private final OkHttpClient clientPool=new OkHttpClient.Builder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).callTimeout(0,TimeUnit.MILLISECONDS).readTimeout(0,TimeUnit.MILLISECONDS).writeTimeout(0,TimeUnit.MILLISECONDS).connectTimeout(15000,TimeUnit.MILLISECONDS).build();
     private final Set<String> artifacts=new LinkedHashSet<>();
+    private final java.util.function.Consumer<JSONArray> artifactPersistence;
     private volatile Call activeCall;
     NetworkOperations(Gateway gateway,BooleanSupplier cancelled,Operations.Checkpoints checkpoints,JSONObject policy) {
+        this(gateway,cancelled,checkpoints,policy,new JSONArray(),value->{});
+    }
+    NetworkOperations(Gateway gateway,BooleanSupplier cancelled,Operations.Checkpoints checkpoints,JSONObject policy,JSONArray retained,java.util.function.Consumer<JSONArray> artifactPersistence) {
         this.gateway=gateway;this.cancelled=cancelled;this.checkpoints=checkpoints;this.policy=policy;
+        this.artifactPersistence=artifactPersistence;
+        for(int i=0;i<retained.length();i++){String id=retained.optString(i,"");if(!id.isEmpty())artifacts.add(id);}
     }
     JSONArray artifactIds(){JSONArray result=new JSONArray();for(String id:artifacts)result.put(id);return result;}
     void cancel(){Call call=activeCall;if(call!=null)call.cancel();gateway.cancel();}
@@ -116,14 +123,16 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
                 try(Response response=activeCall.execute()) {
                     String location=response.header("Location");int status=response.code();
                     if(location!=null&&(status==301||status==302||status==303||status==307||status==308)&&redirect.equals("follow")) {
-                        HttpUrl next=url.resolve(location);if(next==null)throw new IllegalArgumentException("invalid_redirect");
+                        HttpUrl next=url.resolve(location);
                         boolean rewrite=(status==303&&!method.equals("HEAD"))||((status==301||status==302)&&method.equals("POST"));
                         String nextMethod=rewrite?"GET":method;
                         // A new vendor cannot inherit the first vendor's idempotency guarantee.
-                        if(origin(next).equals(origin(url))||nextMethod.equals("GET")||nextMethod.equals("HEAD")) {
-                            if(rewrite){method="GET";body=null;remove(headers,"Content-Type");remove(headers,"Content-Encoding");}
-                            if(!origin(next).equals(origin(url)))for(String h:new ArrayList<>(keys(headers)))if(!h.equalsIgnoreCase("Accept")&&!h.equalsIgnoreCase("Accept-Encoding")&&!h.equalsIgnoreCase("User-Agent")&&!h.equalsIgnoreCase("Content-Type"))headers.remove(h);
-                            url=next;continue;
+                        if(next!=null&&!visited.contains(nextMethod+" "+next)&&(origin(next).equals(origin(url))||nextMethod.equals("GET")||nextMethod.equals("HEAD"))) {
+                            JSONObject nextHeaders=new JSONObject(headers.toString());
+                            if(rewrite)for(String h:keys(nextHeaders))if(h.toLowerCase(Locale.ROOT).startsWith("content-")||h.equalsIgnoreCase("Expect")||h.equalsIgnoreCase("Transfer-Encoding"))nextHeaders.remove(h);
+                            if(!origin(next).equals(origin(url)))for(String h:keys(nextHeaders))if(!h.equalsIgnoreCase("Accept")&&!h.equalsIgnoreCase("Accept-Encoding")&&!h.equalsIgnoreCase("User-Agent")&&!h.equalsIgnoreCase("Content-Type"))nextHeaders.remove(h);
+                            boolean follow=true;try{validate(next,nextMethod,nextHeaders,mode);}catch(SecurityException|IllegalArgumentException denied){follow=false;}
+                            if(follow){method=nextMethod;headers=nextHeaders;if(rewrite)body=null;url=next;continue;}
                         }
                     }
                     JSONObject responseHeaders=new JSONObject();
@@ -133,10 +142,10 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
                     String name=options.optString("name","response");
                     try(InputStream input=response.body().byteStream()) {
                         if(mode.equals("artifact"))result.put("artifact",stream(input,effect+"/"+execution,name,media));
-                        else inline(input,result,mode,max,effect+"/"+execution,name,media);
+                        else inline(input,result,mode,max,effect+"/"+execution,name,media,execution,requestHash);
                     }
                     remember(result);
-                    gateway.finish(effect,execution,requestHash,result,artifactIds());
+                    gateway.finish(effect,execution,requestHash,result,responseArtifacts(result));
                     return result;
                 }
             }
@@ -145,7 +154,7 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         finally{activeCall=null;}
     }
     private static long nonnegative(JSONObject o,String name)throws Exception {long value=o.getLong(name);if(value<0)throw new IllegalArgumentException("invalid_timeout");return value;}
-    private void inline(InputStream source,JSONObject result,String mode,long max,String key,String name,String media)throws Exception {
+    private void inline(InputStream source,JSONObject result,String mode,long max,String key,String name,String media,String execution,String requestHash)throws Exception {
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[8192];int n;
         while((n=source.read(buffer))!=-1) {
             check();
@@ -158,9 +167,15 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         byte[] raw=bytes.toByteArray();String text;
         try{text=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString();}
         catch(java.nio.charset.CharacterCodingException e){result.put("artifact",stream(new ByteArrayInputStream(raw),key,name,media)).put("body_error",new JSONObject().put("code","invalid_utf8"));return;}
-        if(mode.equals("text")){result.put("body_text",text);return;}
-        try{result.put("body_json",strictJson(text));}
-        catch(Exception|StackOverflowError e){result.put("artifact",stream(new ByteArrayInputStream(raw),key,name,media)).put("body_error",new JSONObject().put("code","invalid_json"));}
+        if(mode.equals("text"))result.put("body_text",text);
+        else {
+            try{result.put("body_json",strictJson(text));}
+            catch(Exception|StackOverflowError e){result.put("artifact",stream(new ByteArrayInputStream(raw),key,name,media)).put("body_error",new JSONObject().put("code","invalid_json"));return;}
+        }
+        if(!gateway.inlineFits(execution,requestHash,result,responseArtifacts(result))) {
+            result.remove("body_text");result.remove("body_json");
+            result.put("artifact",stream(new ByteArrayInputStream(raw),key,name,media)).put("body_error",new JSONObject().put("code","control_budget_exceeded"));
+        }
     }
     private static Object strictJson(String text)throws org.json.JSONException {
         Context cx=Context.enter();try {
@@ -179,9 +194,10 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         }
         String digest=Operations.hex(hash.digest());JSONObject artifact=gateway.seal(upload,offset,digest);
         if(artifact.getLong("length")!=offset||!digest.equals(artifact.getString("sha256")))throw new IllegalStateException("artifact_integrity_mismatch");
-        artifacts.add(artifact.getString("artifact_id"));return artifact;
+        if(artifacts.add(artifact.getString("artifact_id")))artifactPersistence.accept(artifactIds());return artifact;
     }
-    private void remember(JSONObject response)throws Exception {JSONObject a=response.optJSONObject("artifact");if(a!=null)artifacts.add(a.getString("artifact_id"));}
+    private void remember(JSONObject response)throws Exception {JSONObject a=response.optJSONObject("artifact");if(a!=null&&artifacts.add(a.getString("artifact_id")))artifactPersistence.accept(artifactIds());}
+    private static JSONArray responseArtifacts(JSONObject response)throws Exception {JSONArray ids=new JSONArray();JSONObject a=response.optJSONObject("artifact");if(a!=null)ids.put(a.getString("artifact_id"));return ids;}
     static String origin(HttpUrl url){String host=url.host();if(host.contains(":"))host="["+host+"]";return url.scheme()+"://"+host+((url.port()==80&&url.scheme().equals("http"))||(url.port()==443&&url.scheme().equals("https"))?"":":"+url.port());}
     private void validate(HttpUrl url,String method,JSONObject headers,String mode)throws Exception {
         if(!url.username().isEmpty()||!url.password().isEmpty())throw new IllegalArgumentException("credentials_in_url_not_supported");

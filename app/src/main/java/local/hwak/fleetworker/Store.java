@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 final class Store extends SQLiteOpenHelper {
     private static Store instance;
@@ -31,6 +32,11 @@ final class Store extends SQLiteOpenHelper {
         public void put(String key,JSONObject record){setState("effect_finish:"+key,record.toString());}
         public JSONObject next(){return nextEffect();}
         public void acknowledge(String key){synchronized(Store.this){getWritableDatabase().delete("state","name=?",new String[]{"effect_finish:"+key});}}
+        public void quarantine(JSONObject record,String reason){synchronized(Store.this){
+            SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
+            try{String key=record.getString("key");record.put("rejection",reason);setState("effect_rejected:"+key,record.toString());db.delete("state","name=?",new String[]{"effect_finish:"+key});db.setTransactionSuccessful();}
+            catch(org.json.JSONException e){throw new IllegalStateException("invalid_effect_record",e);}finally{db.endTransaction();}
+        }}
     };}
     synchronized void completion(JSONObject job, JSONObject completion) {
         SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
@@ -42,10 +48,12 @@ final class Store extends SQLiteOpenHelper {
     }
     synchronized void acknowledged(String id,String attempt) {
         SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
-        try {db.delete("outbox","job_id=? AND attempt_id=?",new String[]{id,attempt});db.delete("checkpoints","job_id=?",new String[]{id});db.setTransactionSuccessful();}
+        try {db.delete("outbox","job_id=? AND attempt_id=?",new String[]{id,attempt});db.delete("checkpoints","job_id=?",new String[]{id});db.delete("state","name=?",new String[]{"job_artifacts:"+id});db.setTransactionSuccessful();}
         finally {db.endTransaction();}
     }
     synchronized void abandonCurrent(String id) { getWritableDatabase().delete("current_job","singleton=1",null); setState("last_stale_job",id); }
+    synchronized JSONArray artifacts(String id){try{return new JSONArray(getState("job_artifacts:"+id,"[]"));}catch(org.json.JSONException e){throw new IllegalStateException("stored_artifacts_invalid",e);}}
+    synchronized void artifacts(String id,JSONArray ids){setState("job_artifacts:"+id,ids.toString());}
     synchronized void checkpoint(String id,String value) {
         ContentValues v=new ContentValues();v.put("job_id",id);v.put("payload",value);
         if(getWritableDatabase().insertWithOnConflict("checkpoints",null,v,SQLiteDatabase.CONFLICT_REPLACE)==-1) throw new IllegalStateException("checkpoint_write_failed");
@@ -67,6 +75,7 @@ final class Store extends SQLiteOpenHelper {
             JSONObject j=current();if(j!=null)o.put("active_job_id",j.optString("id"));
             try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM outbox",null)){if(c.moveToFirst())o.put("outbox",c.getInt(0));}
             try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM state WHERE name GLOB 'effect_finish:*'",null)){if(c.moveToFirst())o.put("effect_outbox",c.getInt(0));}
+            try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM state WHERE name GLOB 'effect_rejected:*'",null)){if(c.moveToFirst())o.put("effect_delivery_rejected",c.getInt(0));}
             for(String key:new String[]{"worker_state","last_error","last_job_id","last_job_status","update_state","update_version","update_session","update_source","update_source_state","update_poll_seconds","last_update_check","last_heartbeat_at"})o.put(key,getState(key,""));
         }catch(Exception ignored){ }
         return o;

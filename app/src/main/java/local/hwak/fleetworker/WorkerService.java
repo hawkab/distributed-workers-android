@@ -97,7 +97,7 @@ public final class WorkerService extends Service {
                     @Override public void checkpoint(String json){store.checkpoint(payload.optString("id"),json);control.progress=json;}
                     @Override public void progress(String json){control.progress=json;}
                 };
-                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"));
+                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"),store.artifacts(payload.getString("id")),ids->store.artifacts(payload.optString("id"),ids));
                 result=Operations.execute(payload,store.checkpoint(payload.getString("id")),control.cancelled::get,callbacks,control.network);
             }catch(CancellationException e){
                 if(closed.get())return;if(control.leaseLost){store.abandonCurrent(payload.getString("id"));return;}

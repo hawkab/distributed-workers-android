@@ -7,10 +7,11 @@ import org.junit.Test;
 
 public class EffectOutboxTest {
     static final class Disk implements EffectOutbox.Persistence {
-        String durable;int writes,acks;
+        String durable,rejected;int writes,acks;
         public void put(String key,JSONObject record){durable=record.toString();writes++;}
         public JSONObject next(){try{return durable==null?null:new JSONObject(durable);}catch(Exception e){throw new AssertionError(e);}}
         public void acknowledge(String key){assertNotNull(durable);durable=null;acks++;}
+        public void quarantine(JSONObject record,String reason){try{rejected=record.put("rejection",reason).toString();durable=null;}catch(Exception e){throw new AssertionError(e);}}
     }
     static JSONObject body()throws Exception{return new JSONObject().put("attempt_id","attempt").put("execution_id","nonce").put("response",new JSONObject().put("status",201).put("body_text","actual response"));}
     @Test public void lostAcknowledgementSurvivesNewOutboxAndReplaysExactResponseOnly()throws Exception {
@@ -25,5 +26,11 @@ public class EffectOutboxTest {
         try{box.deliver(record,(p,b)->new JSONObject().put("recorded",true).put("execution_id","foreign"));fail();}catch(IllegalStateException expected){}
         assertNotNull(disk.durable);assertEquals(0,disk.acks);
         box.deliver(record,(p,b)->new JSONObject().put("recorded",true).put("candidate_saved",true).put("execution_id","nonce"));assertNull(disk.durable);
+    }
+    @Test public void permanentConflictRetainsExactResponseWithoutBlockingFutureWork()throws Exception {
+        Disk disk=new Disk();EffectOutbox box=new EffectOutbox(disk);box.record("/finish",body());
+        assertTrue(box.flushOne((p,b)->{throw new Api.Failure(409);}));
+        assertNull(disk.durable);assertNotNull(disk.rejected);assertEquals(body().toString(),new JSONObject(disk.rejected).getJSONObject("body").toString());assertEquals("http_409",new JSONObject(disk.rejected).getString("rejection"));
+        assertFalse(new EffectOutbox(disk).flushOne((p,b)->{throw new AssertionError("terminal conflict repeated");}));
     }
 }

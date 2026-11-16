@@ -13,6 +13,7 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 final class Api {
+    static final int CONTROL_JSON_BYTES=16*1024*1024;
     static final class Failure extends IOException { final int status; Failure(int s){super("api_http_"+s);status=s;} }
     private final Configuration config;
     private final EffectOutbox effects;
@@ -60,6 +61,10 @@ final class Api {
             @Override public void finish(String id,String execution,String hash,JSONObject response,JSONArray artifacts)throws Exception {
                 JSONObject record=effects.record(effect(id)+"/finish",identity().put("execution_id",execution).put("request_sha256",hash).put("response",response).put("artifact_ids",artifacts));
                 effects.deliver(record,(path,body)->request("POST",path,body,null,0,true));
+            }
+            @Override public boolean inlineFits(String execution,String hash,JSONObject response,JSONArray artifacts)throws Exception {
+                JSONObject body=identity().put("execution_id",execution).put("request_sha256",hash).put("response",response).put("artifact_ids",artifacts);
+                return body.toString().getBytes(StandardCharsets.UTF_8).length<=CONTROL_JSON_BYTES;
             }
             @Override public String create(String key,String name,String type)throws Exception {
                 JSONObject ack=request("POST","/v1/jobs/"+encode(job.getString("id"))+"/artifacts",identity().put("key",key).put("name",name).put("media_type",type),null,0,false);return ack.getString("upload_id");

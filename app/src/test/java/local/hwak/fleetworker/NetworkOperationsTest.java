@@ -19,7 +19,7 @@ import okio.Buffer;
 
 public class NetworkOperationsTest {
     private static final Operations.Checkpoints NOOP=new Operations.Checkpoints(){public void checkpoint(String s){}public void progress(String s){}};
-    static final class Sink implements NetworkOperations.Gateway {
+    static class Sink implements NetworkOperations.Gateway {
         MessageDigest digest;long length;int largest;JSONObject cached;String state="execute";boolean cancel;Runnable created=()->{};
         public JSONObject begin(String effect,String execution,JSONObject request)throws Exception{return cached!=null?new JSONObject().put("state","completed").put("response",cached):new JSONObject().put("state",state).put("request_sha256","a".repeat(64));}
         public void finish(String effect,String execution,String hash,JSONObject response,JSONArray ids){cached=response;}
@@ -62,6 +62,18 @@ public class NetworkOperationsTest {
             RecordedRequest sent=server.takeRequest();assertEquals("PATCH",sent.getMethod());assertEquals("hello",sent.getBody().readUtf8());
         }
     }
+    @Test public void inlineControlEnvelopeOverflowPreservesOriginalJsonWhitespace()throws Exception {
+        String original="  {\"value\": \"original\"}  ";
+        try(MockWebServer server=new MockWebServer()) {
+            server.enqueue(new MockResponse().setBody(original));server.start();
+            Sink sink=new Sink(){@Override public boolean inlineFits(String execution,String hash,JSONObject response,JSONArray artifacts){assertTrue(response.has("body_json"));return false;}};
+            try(NetworkOperations net=new NetworkOperations(sink,()->false,NOOP,null)) {
+                JSONObject result=net.request(request(server.url("/data").toString()).put("response",new JSONObject().put("mode","json").put("max_bytes",100)));
+                assertFalse(result.has("body_json"));assertEquals("control_budget_exceeded",result.getJSONObject("body_error").getString("code"));
+                assertEquals(Operations.hex(MessageDigest.getInstance("SHA-256").digest(original.getBytes(StandardCharsets.UTF_8))),result.getJSONObject("artifact").getString("sha256"));
+            }
+        }
+    }
     @Test public void completedEffectAvoidsAnotherVendorRequestAndUncertainNeverExecutes()throws Exception {
         Sink sink=new Sink();sink.cached=new JSONObject().put("status",201).put("artifact",new JSONObject().put("artifact_id","saved"));
         try(NetworkOperations net=new NetworkOperations(sink,()->false,NOOP,null)){assertEquals(201,net.request(request("http://127.0.0.1:1/unused")).getInt("status"));assertEquals("saved",net.artifactIds().getString(0));}
@@ -78,7 +90,7 @@ public class NetworkOperationsTest {
             try(NetworkOperations net=new NetworkOperations(new Sink(),()->false,NOOP,null)){assertEquals(307,net.request(request(source.url("/post").toString()).put("method","POST")).getInt("status"));}
             assertEquals(1,target.getRequestCount());
             source.enqueue(new MockResponse().setResponseCode(302).setHeader("Location",target.url("/target")));
-            try(NetworkOperations net=new NetworkOperations(new Sink(),()->false,NOOP,new JSONObject().put("origins",new JSONArray().put(NetworkOperations.origin(source.url("/")))))){try{net.request(request(source.url("/get").toString()));fail();}catch(SecurityException expected){assertEquals("network_policy_denied_origins",expected.getMessage());}}
+            try(NetworkOperations net=new NetworkOperations(new Sink(),()->false,NOOP,new JSONObject().put("origins",new JSONArray().put(NetworkOperations.origin(source.url("/")))))){assertEquals(302,net.request(request(source.url("/get").toString())).getInt("status"));}
         }
     }
     @Test public void cancelUnblocksAStalledHttpBodyWithoutJobDeadline()throws Exception {
@@ -88,6 +100,15 @@ public class NetworkOperationsTest {
             CompletableFuture<Throwable> future=CompletableFuture.supplyAsync(()->{try{net.request(request(server.url("/stall").toString()));return null;}catch(Throwable e){return e;}});
             try{assertTrue(entered.await(10,TimeUnit.SECONDS));cancelled.set(true);net.cancel();assertTrue(future.get(1,TimeUnit.SECONDS) instanceof java.util.concurrent.CancellationException);}
             finally{net.close();}
+        }
+    }
+    @Test public void artifactOwnershipSurvivesCheckpointResumeWithoutRepeatingHttp()throws Exception {
+        final JSONArray[] durable={new JSONArray()};Sink sink=new Sink();sink.cached=new JSONObject().put("status",200).put("artifact",new JSONObject().put("artifact_id","persisted"));
+        try(NetworkOperations first=new NetworkOperations(sink,()->false,NOOP,null,durable[0],v->durable[0]=v)){first.request(request("https://example.org/not-contacted"));}
+        assertEquals("persisted",durable[0].getString(0));
+        try(NetworkOperations resumed=new NetworkOperations(new Sink(),()->false,NOOP,null,durable[0],v->durable[0]=v)) {
+            Object result=Operations.javascript("function run(input,resume,ctx){return resume;}",new JSONObject(),"{\"artifact_id\":\"persisted\"}",()->false,NOOP,resumed);
+            assertEquals("persisted",((JSONObject)result).getString("artifact_id"));assertEquals("persisted",resumed.artifactIds().getString(0));
         }
     }
     @Test public void thirdArgumentAddsNetworkWithoutChangingResumeOrLegacyCallbacks()throws Exception {
