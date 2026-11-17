@@ -152,6 +152,55 @@ The worker heartbeat may set `update_poll_seconds` live (30 for pilot, 900 for
 normal polling). Job heartbeat may return `lease_until` and `cancel_requested`.
 No APK restart is necessary to apply the polling policy.
 
+## Task proxy configuration
+
+Task HTTP requests (including `ctx.http.request`) support operator-configured
+HTTP proxies with HTTPS CONNECT and SOCKS5/SOCKS5h with per-connection username
+and password authentication. SOCKS names are resolved by the proxy. The worker
+does not change the process-wide Java authenticator. TLS certificates and
+origin hostnames are checked normally. A `https://` TLS-to-proxy endpoint and
+SOCKS4 are rejected; an `http://` endpoint can tunnel an HTTPS origin using
+CONNECT. No protocol label is silently converted to another protocol.
+
+The DUMP-protected `CONFIGURE_PROXY` action accepts the private `proxy_json`
+configuration and optional `proxy_sources` text / `proxy_cache` JSON extras.
+These are stored in the app's private storage and never added to public assets
+or status output. A configuration has this shape (example addresses only):
+
+```json
+{
+  "mode": "required",
+  "servers": [{"url": "http://proxy.example.invalid:8080", "username": "operator", "password": "private"}],
+  "sources_file": "/private/operator/proxy-sources.txt",
+  "cache_file": "/private/operator/proxy-cache.json",
+  "required_country": "RU"
+}
+```
+
+`off` uses a direct task connection. `required` never falls back to a direct
+connection; temporary route failures remain recoverable for safe/idempotent
+effects. `prefer` uses an available proxy and permits direct access when no
+healthy route remains. Uncertain non-replayable effects are not repeated through
+another route. Explicit `servers` are trusted operator choices. Source URLs may
+be one HTTPS URL per line or a JSON array of strings / `{url,scheme}` objects;
+the scheme hint is needed for lists containing only `host:port`.
+
+Sources are fetched anonymously over verified HTTPS, directly, in a background
+refresh. Plain lists and Proxifly JSON are parsed into private candidates. These
+candidates are never active solely because a feed calls them Russian or alive.
+The operator's cache must contain `verified` entries with `url`, optional
+`username`/`password`, `verified_at` (UTC ISO8601), `exit_ip` and `exit_country`;
+`required_country`, when present, filters these verified entries. Source failure
+does not disable already verified routes or ordinary computation. Advisory route
+health is stored separately, using endpoint hashes, absolute UTC millisecond
+`retry_after_ms` / `last_ok` values and failure counts.
+
+Gateway control, artifact uploads, release discovery and update downloads always
+use direct connections, independently of task proxies or system proxy settings.
+Proxy credentials are supplied only to the proxy transport. Caller-provided
+`Proxy-Authorization` headers are rejected. The capability `proxy.egress.v1`
+means the worker implements this private routing configuration.
+
 ## Release discovery and failover
 
 The public template defines this ordered chain:

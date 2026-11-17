@@ -113,7 +113,7 @@ public final class WorkerService extends Service {
                     @Override public void checkpoint(String json){store.checkpoint(payload.optString("id"),json);control.progress=json;}
                     @Override public void progress(String json){control.progress=json;}
                 };
-                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"),store.artifacts(payload.getString("id")),ids->store.artifacts(payload.optString("id"),ids));
+                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"),store.artifacts(payload.getString("id")),ids->store.artifacts(payload.optString("id"),ids),ProxyConfiguration.load(this));
                 result=Operations.execute(payload,store.checkpoint(payload.getString("id")),control.cancelled::get,callbacks,control.network);
             }catch(CancellationException e){
                 if(closed.get())return;if(control.leaseLost){store.abandonCurrent(payload.getString("id"));return;}
@@ -172,7 +172,7 @@ public final class WorkerService extends Service {
         if(memory.lowMemory || memory.availMem<=memory.threshold)return false;
         return Build.VERSION.SDK_INT<29 || getSystemService(PowerManager.class).getCurrentThermalStatus()<PowerManager.THERMAL_STATUS_SEVERE;
     }
-    static JSONArray capabilities(){return new JSONArray().put("sha256").put("text.normalize").put("javascript").put("javascript.portable.v1").put("http.request").put("artifact.stream");}
+    static JSONArray capabilities(){return new JSONArray().put("sha256").put("text.normalize").put("javascript").put("javascript.portable.v1").put("http.request").put("artifact.stream").put("proxy.egress.v1");}
     private static String path(String id)throws Exception{return URLEncoder.encode(id,"UTF-8");}
     private static long parseLong(String s){try{return Long.parseLong(s);}catch(NumberFormatException e){return 0;}}
     private void signal(){synchronized(wake){wake.notifyAll();}}

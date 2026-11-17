@@ -20,6 +20,7 @@
             <intent-filter>
                 <action android:name="local.hwak.fleetworker.CONFIGURE" />
                 <action android:name="local.hwak.fleetworker.CONFIGURE_RELEASES" />
+                <action android:name="local.hwak.fleetworker.CONFIGURE_PROXY" />
                 <action android:name="local.hwak.fleetworker.STATUS" />
                 <action android:name="local.hwak.fleetworker.RELOAD" />
                 <action android:name="local.hwak.fleetworker.UPDATE_CHECK" />

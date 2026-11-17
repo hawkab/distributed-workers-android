@@ -36,6 +36,7 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
     static final int CHUNK_BYTES=1024*1024;
     static final class Retryable extends java.io.IOException { Retryable(){super("network_transport_retry");} }
     interface Gateway {
+        default JSONObject status(String effect)throws Exception{return null;}
         JSONObject begin(String effect,String execution,JSONObject request)throws Exception;
         void finish(String effect,String execution,String requestHash,JSONObject response,JSONArray artifacts)throws Exception;
         String create(String key,String name,String mediaType)throws Exception;
@@ -48,7 +49,9 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
     private final BooleanSupplier cancelled;
     private final Operations.Checkpoints checkpoints;
     private final JSONObject policy;
-    private final OkHttpClient clientPool=new OkHttpClient.Builder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).callTimeout(0,TimeUnit.MILLISECONDS).readTimeout(0,TimeUnit.MILLISECONDS).writeTimeout(0,TimeUnit.MILLISECONDS).connectTimeout(15000,TimeUnit.MILLISECONDS).build();
+    private final TaskProxies proxies;
+    private final OkHttpClient clientPool;
+    static OkHttpClient defaultClient(){return new OkHttpClient.Builder().proxy(java.net.Proxy.NO_PROXY).socketFactory(TaskProxies.directSockets()).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).callTimeout(0,TimeUnit.MILLISECONDS).readTimeout(0,TimeUnit.MILLISECONDS).writeTimeout(0,TimeUnit.MILLISECONDS).connectTimeout(15000,TimeUnit.MILLISECONDS).build();}
     private final Set<String> artifacts=new LinkedHashSet<>();
     private final java.util.function.Consumer<JSONArray> artifactPersistence;
     private volatile Call activeCall;
@@ -56,7 +59,15 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         this(gateway,cancelled,checkpoints,policy,new JSONArray(),value->{});
     }
     NetworkOperations(Gateway gateway,BooleanSupplier cancelled,Operations.Checkpoints checkpoints,JSONObject policy,JSONArray retained,java.util.function.Consumer<JSONArray> artifactPersistence) {
+        this(gateway,cancelled,checkpoints,policy,retained,artifactPersistence,TaskProxies.direct());
+    }
+    NetworkOperations(Gateway gateway,BooleanSupplier cancelled,Operations.Checkpoints checkpoints,JSONObject policy,JSONArray retained,java.util.function.Consumer<JSONArray> artifactPersistence,TaskProxies proxies) {
+        this(gateway,cancelled,checkpoints,policy,retained,artifactPersistence,proxies,defaultClient());
+    }
+    NetworkOperations(Gateway gateway,BooleanSupplier cancelled,Operations.Checkpoints checkpoints,JSONObject policy,JSONArray retained,java.util.function.Consumer<JSONArray> artifactPersistence,TaskProxies proxies,OkHttpClient clientPool) {
         this.gateway=gateway;this.cancelled=cancelled;this.checkpoints=checkpoints;this.policy=policy;
+        this.proxies=proxies;
+        this.clientPool=clientPool;
         this.artifactPersistence=artifactPersistence;
         for(int i=0;i<retained.length();i++){String id=retained.optString(i,"");if(!id.isEmpty())artifacts.add(id);}
     }
@@ -96,7 +107,7 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         }
         for(String name:keys(headers)) {
             if(!name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")||headers.getString(name).contains("\r")||headers.getString(name).contains("\n"))throw new IllegalArgumentException("invalid_http_header");
-            if(name.equalsIgnoreCase("Content-Length")||name.equalsIgnoreCase("Transfer-Encoding")||name.equalsIgnoreCase("Connection"))throw new IllegalArgumentException("transport_manages_header");
+            if(name.equalsIgnoreCase("Content-Length")||name.equalsIgnoreCase("Transfer-Encoding")||name.equalsIgnoreCase("Connection")||name.equalsIgnoreCase("Proxy-Authorization"))throw new IllegalArgumentException("transport_manages_header");
         }
         HttpUrl url=HttpUrl.get(spec.getString("url"));validate(url,method,headers,mode);
         byte[] body=spec.has("body_text")?spec.getString("body_text").getBytes(StandardCharsets.UTF_8):null;
@@ -108,13 +119,21 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
             if(timeouts.has("connect_ms"))builder.connectTimeout(nonnegative(timeouts,"connect_ms"),TimeUnit.MILLISECONDS);
             if(timeouts.has("read_idle_ms"))builder.readTimeout(nonnegative(timeouts,"read_idle_ms"),TimeUnit.MILLISECONDS);
         }
-        OkHttpClient client=builder.build();Set<String> visited=new HashSet<>();
-        String execution=UUID.randomUUID().toString();JSONObject begin=gateway.begin(effect,execution,original);
+        builder.proxy(java.net.Proxy.NO_PROXY);Set<String> visited=new HashSet<>();
+        String execution=UUID.randomUUID().toString();TaskProxies.Endpoint selected=null;
+        JSONObject prior=proxies.required()?gateway.status(effect):null;
+        // Completed remote effects must still pass BEGIN's request-hash validation.
+        // A new never effect is not reserved until a task route is available.
+        boolean existingNoDispatch=prior!=null&&(prior.optString("state").equals("completed")||replay.equals("never"));
+        if(!existingNoDispatch)try{selected=proxies.select(System.currentTimeMillis());}catch(java.io.IOException unavailable){throw new Retryable();}
+        JSONObject begin=gateway.begin(effect,execution,original);
         String state=begin.getString("state");
         if(state.equals("completed")){JSONObject saved=begin.getJSONObject("response");remember(saved);return saved;}
         if(!state.equals("execute"))throw new IllegalStateException("effect_uncertain");
         String requestHash=begin.getString("request_sha256");
         try {
+            if(existingNoDispatch)selected=proxies.select(System.currentTimeMillis());if(selected!=null)selected.apply(builder);
+            OkHttpClient client=builder.build();
             while(true) {
                 check();validate(url,method,headers,mode);
                 if(!visited.add(method+" "+url))throw new IllegalArgumentException("redirect_cycle");
@@ -126,6 +145,7 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
                 activeCall=client.newCall(request.method(method,payload).build());
                 try(Response response=activeCall.execute()) {
                     String location=response.header("Location");int status=response.code();
+                    if(selected!=null&&status==407)throw new java.io.IOException("proxy_authentication_failed");
                     if(location!=null&&(status==301||status==302||status==303||status==307||status==308)&&redirect.equals("follow")) {
                         HttpUrl next=url.resolve(location);
                         boolean rewrite=(status==303&&!method.equals("HEAD"))||((status==301||status==302)&&method.equals("POST"));
@@ -150,11 +170,12 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
                     }
                     remember(result);
                     gateway.finish(effect,execution,requestHash,result,responseArtifacts(result));
+                    proxies.succeeded(selected);
                     return result;
                 }
             }
         }catch(Api.Failure e){throw e;}
-        catch(java.io.IOException e){check();if(replay.equals("safe")||replay.equals("idempotent"))throw new Retryable();throw new IllegalStateException("effect_uncertain",e);}
+        catch(java.io.IOException e){check();proxies.failed(selected);if(replay.equals("safe")||replay.equals("idempotent"))throw new Retryable();throw new IllegalStateException("effect_uncertain",e);}
         finally{activeCall=null;}
     }
     private static long nonnegative(JSONObject o,String name)throws Exception {long value=o.getLong(name);if(value<0)throw new IllegalArgumentException("invalid_timeout");return value;}

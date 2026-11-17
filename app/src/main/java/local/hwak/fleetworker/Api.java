@@ -27,11 +27,15 @@ final class Api {
         JSONArray advertised=body.optJSONArray("capabilities");
         return profiles.header(advertised==null?defaults:advertised);
     }
+    static HttpsURLConnection openDirect(String address)throws IOException {
+        HttpsURLConnection connection=(HttpsURLConnection)new URL(address).openConnection(java.net.Proxy.NO_PROXY);
+        connection.setSSLSocketFactory(new DirectTlsSockets(connection.getSSLSocketFactory()));return connection;
+    }
     boolean flushEffect()throws Exception{return effects.flushOne((path,body)->post(path,body));}
     JSONObject post(String path,JSONObject body)throws Exception {
         if(config.workerId.isEmpty()&&!path.equals("/v1/workers/connect"))throw new IllegalStateException("worker_not_connected");
         String profile=profileHeader(path,body,capabilities,profiles);
-        HttpsURLConnection c=(HttpsURLConnection)new URL(config.baseUrl+path).openConnection();
+        HttpsURLConnection c=openDirect(config.baseUrl+path);
         c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setInstanceFollowRedirects(false);c.setRequestMethod("POST");c.setDoOutput(true);
         c.setRequestProperty("Authorization","Bearer "+config.token);c.setRequestProperty("Content-Type","application/json");c.setRequestProperty("Accept","application/json");
         if(profile!=null)c.setRequestProperty("X-Worker-Profile",profile);
@@ -58,7 +62,7 @@ final class Api {
                 }
             }
             private JSONObject once(String method,String path,JSONObject json,byte[] bytes,int length)throws Exception {
-                HttpsURLConnection c=(HttpsURLConnection)new URL(config.baseUrl+path).openConnection();active=c;
+                HttpsURLConnection c=openDirect(config.baseUrl+path);active=c;
                 c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setInstanceFollowRedirects(false);c.setRequestMethod(method);
                 c.setRequestProperty("Authorization","Bearer "+config.token);c.setRequestProperty("Accept","application/json");
                 c.setRequestProperty("X-Worker-Id",config.workerId);c.setRequestProperty("X-Attempt-Id",job.getString("attempt_id"));c.setRequestProperty("X-Fencing-Token",job.get("fencing_token").toString());
@@ -70,6 +74,9 @@ final class Api {
             }
             @Override public JSONObject begin(String id,String execution,JSONObject spec)throws Exception {
                 return request("POST",effect(id)+"/begin",identity().put("execution_id",execution).put("request",spec),null,0,false);
+            }
+            @Override public JSONObject status(String id)throws Exception {
+                try{return request("GET",effect(id)+"/status",null,null,0,false);}catch(Failure missing){if(missing.status==404)return null;throw missing;}
             }
             @Override public void finish(String id,String execution,String hash,JSONObject response,JSONArray artifacts)throws Exception {
                 JSONObject record=effects.record(effect(id)+"/finish",identity().put("execution_id",execution).put("request_sha256",hash).put("response",response).put("artifact_ids",artifacts));

@@ -21,6 +21,7 @@ public class NetworkOperationsTest {
     private static final Operations.Checkpoints NOOP=new Operations.Checkpoints(){public void checkpoint(String s){}public void progress(String s){}};
     static class Sink implements NetworkOperations.Gateway {
         MessageDigest digest;long length;int largest;JSONObject cached;String state="execute";boolean cancel;Runnable created=()->{};
+        public JSONObject status(String effect)throws Exception{return cached==null?null:new JSONObject().put("state","completed").put("response",cached);}
         public JSONObject begin(String effect,String execution,JSONObject request)throws Exception{return cached!=null?new JSONObject().put("state","completed").put("response",cached):new JSONObject().put("state",state).put("request_sha256","a".repeat(64));}
         public void finish(String effect,String execution,String hash,JSONObject response,JSONArray ids){cached=response;}
         public String create(String key,String name,String type)throws Exception{digest=MessageDigest.getInstance("SHA-256");length=0;created.run();return "upload";}

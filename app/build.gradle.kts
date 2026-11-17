@@ -34,8 +34,8 @@ android {
         applicationId = "local.hwak.fleetworker"
         minSdk = 26
         targetSdk = 34
-        versionCode = providers.gradleProperty("workerVersionCode").orElse("12").get().toInt()
-        versionName = providers.gradleProperty("workerVersionName").orElse("0.5.0").get()
+        versionCode = providers.gradleProperty("workerVersionCode").orElse("13").get().toInt()
+        versionName = providers.gradleProperty("workerVersionName").orElse("0.7.0").get()
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -61,5 +61,6 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.1")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.1")
     testImplementation("org.json:json:20240303")
 }

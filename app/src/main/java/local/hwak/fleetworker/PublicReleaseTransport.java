@@ -17,7 +17,7 @@ final class PublicReleaseTransport implements ReleaseResolver.Transport {
         while(true) {
             ReleaseSource.publicHttps(current);
             if(!visited.add(current))throw new SecurityException("release_redirect_cycle");
-            HttpsURLConnection connection=(HttpsURLConnection)new URL(current).openConnection();
+            HttpsURLConnection connection=Api.openDirect(current);
             connection.setConnectTimeout(15000);connection.setReadTimeout(60000);connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("User-Agent","FleetWorker/"+BuildConfig.VERSION_NAME);connection.setRequestProperty("Accept","application/json, application/octet-stream, */*");
             int status;

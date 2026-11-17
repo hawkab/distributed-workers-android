@@ -14,6 +14,8 @@ public final class ControlReceiver extends BroadcastReceiver {
                 store.setState("last_error","");WorkerService.start(c,false);
             } else if("local.hwak.fleetworker.CONFIGURE_RELEASES".equals(action)) {
                 ReleaseConfiguration.save(c,intent.getStringExtra("release_sources"));WorkerService.start(c,true);
+            } else if("local.hwak.fleetworker.CONFIGURE_PROXY".equals(action)) {
+                ProxyConfiguration.save(c,intent.getStringExtra("proxy_json"),intent.getStringExtra("proxy_sources"),intent.getStringExtra("proxy_cache"));WorkerService.start(c,false);
             } else if("local.hwak.fleetworker.RELOAD".equals(action))WorkerService.start(c,false);
             else if("local.hwak.fleetworker.UPDATE_CHECK".equals(action))WorkerService.start(c,true);
             else if("local.hwak.fleetworker.CANCEL".equals(action))WorkerService.cancelCurrent();

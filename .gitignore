@@ -6,6 +6,13 @@ dist/
 
 # Per-build private endpoints; generated from CI secret or configured locally.
 app/src/main/assets/release-sources.json
+# Operator-owned proxy feeds, routing and verified cache are never public inputs.
+proxy-sources.txt
+proxy-sources.json
+proxy-cache.json
+proxy-config.json
+proxy-sources.local.txt
+proxy.local.json
 # Operator-only runtime provisioning files; never packaged in the APK.
 .local/
 mirror-git.py
