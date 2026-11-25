@@ -20,6 +20,8 @@ final class Api {
     private final EffectOutbox effects;
     private final Profiles profiles;
     private final JSONArray capabilities;
+    volatile boolean claimWaitApplied;
+    static boolean appliedClaimWait(String path,String header){return path.equals("/v1/jobs/claim")&&header!=null&&header.matches("(?i).*(?:^|[,;\\s])wait=([1-9][0-9]*)(?:$|[,;\\s]).*");}
     Api(Configuration c,Store store,JSONArray capabilities,Profiles profiles){config=c;effects=new EffectOutbox(store.effectPersistence());this.capabilities=capabilities;this.profiles=profiles;}
     static boolean carriesProfile(String path){return path.equals("/v1/workers/connect")||path.equals("/v1/workers/heartbeat")||path.equals("/v1/jobs/claim");}
     static String profileHeader(String path,JSONObject body,JSONArray defaults,Profiles profiles)throws Exception {
@@ -39,9 +41,11 @@ final class Api {
         c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setInstanceFollowRedirects(false);c.setRequestMethod("POST");c.setDoOutput(true);
         c.setRequestProperty("Authorization","Bearer "+config.token);c.setRequestProperty("Content-Type","application/json");c.setRequestProperty("Accept","application/json");
         if(profile!=null)c.setRequestProperty("X-Worker-Profile",profile);
+        if(path.equals("/v1/jobs/claim"))c.setRequestProperty("Prefer","wait=20");
         byte[] raw=body.toString().getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(raw.length);
-        try {try(java.io.OutputStream out=c.getOutputStream()){out.write(raw);}int status=c.getResponseCode();if(status==204)return null;if(status!=200)throw new Failure(status);try(InputStream in=c.getInputStream()){return new JSONObject(read(in));}}
-        finally {c.disconnect();}
+        boolean reusable=false;
+        try {try(java.io.OutputStream out=c.getOutputStream()){out.write(raw);}int status=c.getResponseCode();if(path.equals("/v1/jobs/claim"))claimWaitApplied=appliedClaimWait(path,c.getHeaderField("Preference-Applied"));if(status==204){reusable=true;return null;}if(status!=200)throw new Failure(status);try(InputStream in=c.getInputStream()){JSONObject result=new JSONObject(read(in));reusable=true;return result;}}
+        finally {if(!reusable)c.disconnect();}
     }
     static String read(InputStream in)throws IOException {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];for(int n;(n=in.read(b))!=-1;)out.write(b,0,n);return out.toString(StandardCharsets.UTF_8.name());}
     NetworkOperations.Gateway networkGateway(JSONObject job,BooleanSupplier cancelled) {

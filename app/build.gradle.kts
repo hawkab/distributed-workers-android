@@ -34,8 +34,8 @@ android {
         applicationId = "local.hwak.fleetworker"
         minSdk = 26
         targetSdk = 34
-        versionCode = providers.gradleProperty("workerVersionCode").orElse("13").get().toInt()
-        versionName = providers.gradleProperty("workerVersionName").orElse("0.7.0").get()
+        versionCode = providers.gradleProperty("workerVersionCode").orElse("14").get().toInt()
+        versionName = providers.gradleProperty("workerVersionName").orElse("0.7.1").get()
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -73,7 +73,7 @@ public final class WorkerService extends Service {
                 }
                 store.setState("worker_state","idle");
                 JSONObject response=api.post("/v1/jobs/claim",new JSONObject().put("worker_id",config.workerId).put("capabilities",capabilities()));
-                if(response==null){pause(5000);continue;}
+                if(response==null){if(!api.claimWaitApplied)pause(5000);continue;}
                 JSONObject job=response.getJSONObject("job");job.getString("id");job.getString("attempt_id");job.get("fencing_token");
                 store.claimed(job);backoff=1000;
             } catch(InterruptedException e){Thread.currentThread().interrupt();return;}
