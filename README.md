@@ -12,7 +12,7 @@ included Gradle wrapper:
 
 ```
 JAVA_HOME=/path/to/jdk21 ./gradlew :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease \
-  -PworkerVersionCode=14 -PworkerVersionName=0.7.1
+  -PworkerVersionCode=15 -PworkerVersionName=0.7.2
 ```
 
 Builds require no production configuration or secrets. `preparePublicAssets`
@@ -301,3 +301,5 @@ unit tests.
 Upstream runtime: https://github.com/mozilla/rhino (MPL-2.0).
 
 Claims use `Prefer: wait=20`: the gateway wakes the request as soon as work is committed. A supported long-poll response has no additional five-second delay; older gateways retain the existing fallback. Fully consumed control responses return their connections to the platform pool.
+
+The APK targets API36 while retaining minSdk26. This meets the silent self-update target requirement on API37 devices; APK certificate and signed-manifest checks remain mandatory.
