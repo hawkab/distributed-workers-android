@@ -5,6 +5,20 @@ media commands or Quiet TV modifications. It runs an owner-enabled foreground
 service (`specialUse`) and restarts through BOOT_COMPLETED/MY_PACKAGE_REPLACED.
 The APK contains no native libraries and runs on the verified ARM32 TV.
 
+<!-- fleet-architecture:start -->
+## Architecture and repository boundary
+
+![Shared UML component architecture; worker-android is highlighted](docs/architecture.svg)
+
+All six repositories show the same system. **Blue and “THIS REPOSITORY” identify the component owned here**; grey boxes show sibling repositories or external infrastructure. Solid arrows carry runtime traffic, dashed arrows show contracts or reuse, and dotted arrows show deployment or updates. The protocol applies to the gateway and both execution SDKs; deployment arrows show the principal composition entry points.
+
+This repository owns the Android foreground service, Java/Rhino execution adapter, SQLite checkpoint/outbox, resource and power admission, and signed APK updates. Android calls the gateway over outgoing HTTPS; it does not run PostgreSQL or RabbitMQ.
+
+Implementation: [service](app/src/main/java/local/hwak/fleetworker/WorkerService.java), [resource admission](app/src/main/java/local/hwak/fleetworker/Admission.java), [Java sources](app/src/main/java/local/hwak/fleetworker/).
+
+[Open the SVG](docs/architecture.svg) · [Editable DOT source](docs/architecture.dot). The common model and Python-only SVG renderer live in [platform](https://gitflic.ru/project/distributed-workers/platform). From its checkout, `python3 -B tools/render-architecture.py --workspace ../..` regenerates every ownership view in a workspace containing `repos/<component>`. No diagram service or production configuration is needed.
+<!-- fleet-architecture:end -->
+
 ## Build
 
 Use a **full** JDK 21 (the system JRE alone lacks javac), Android SDK 36 and the
@@ -312,3 +326,52 @@ An idle charging device may admit two light jobs when measured CPU, memory
 and thermal conditions permit. Heat or memory pressure pauses new admission;
 unknown CPU telemetry stays single-slot. Threads use Android's background
 priority. Live jobs retain their lease/checkpoint/outbox during a budget shrink.
+
+<!-- fleet-examples:start -->
+## Runnable examples and measured results
+
+A local computation needs no source service:
+
+```json
+{
+  "operation": "sha256",
+  "input": {
+    "text": "abc"
+  },
+  "required_capabilities": [
+    "sha256"
+  ]
+}
+```
+
+Expected result: `{"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}`. The same task runs on Node, PHP and Android.
+
+The [binary download example](https://github.com/hawkab/distributed-workers-protocol/blob/main/examples/mirror-download.json) fetches a public signed runtime ZIP and streams it to gateway artifact storage. Its expected SHA-256 is pinned in [the example assertions](https://github.com/hawkab/distributed-workers-protocol/blob/main/examples/benchmark/expected.json). The runner downloads the sealed artifact independently and verifies every byte. Worker task payloads are not staged as local files.
+
+The [portable JavaScript example](https://github.com/hawkab/distributed-workers-protocol/blob/main/examples/word-count.json) counts 50,000 tokens with one durable checkpoint. It returns `{"words":50000,"counts":{"alpha":20000,"beta":20000,"gamma":10000}}`. It uses the shared ES5.1 ABI; Node requires `trusted_javascript: true`, and the PHP adapter does not advertise JavaScript.
+
+Run the shared client as a **producer/operator with an administrator credential**, not with a worker token. Keep the [protocol checkout](https://gitflic.ru/project/distributed-workers/protocol) beside this checkout:
+
+```sh
+mkdir -p .local
+cp ../protocol/examples/benchmark/runner.example.json .local/examples.local.json
+# Configure your API base and an owner-readable token file in that local JSON.
+python3 -B ../protocol/tools/run-examples.py \
+  --config .local/examples.local.json \
+  --state .local/example-run/state.json \
+  --output .local/example-run/measurements.json \
+  --scenario sha256 --scenario mirror-download --repetitions 5
+```
+
+Repeat the command to resume its saved jobs after interruption. It reconciles the same idempotency keys, retains failed/interrupted evidence, and never gives a running job an overall deadline. `required_capabilities` and `resource_requirements` select a pool; `allowed_worker_ids` checks the actual executor afterward. A label alone does not select a platform. Keep these routing settings and all identity receipts private. The exported measurements contain neither endpoints, credentials nor worker/job IDs.
+
+Measured 26–27 November 2026 (UTC+03), using SDK 0.8.4 and Android 0.8.0.
+
+| Executor | Task | Completed / planned | Queue, median s | Execution/result, median s |
+| --- | --- | --- | --- | --- |
+| Android / ARM64 | SHA-256: abc | 5 / 5 | 0.275 | 1.873 |
+| Android / ARM64 | Word count: 50,000 tokens | 5 / 5 | 0.315 | 2.888 |
+| Android / ARM64 | ZIP stream: GitFlic | 5 / 5 | 0.074 | 6.085 |
+
+Times distinguish queue wait from execution **including task work and result delivery**. They are live-system observations under existing load, not pure CPU timings. Complete cohorts use five trials each; see the [full measurements and method](https://github.com/hawkab/distributed-workers-protocol/blob/main/docs/EXAMPLES.md).
+<!-- fleet-examples:end -->
