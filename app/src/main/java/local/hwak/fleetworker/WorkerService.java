@@ -25,11 +25,15 @@ import org.json.JSONTokener;
 public final class WorkerService extends Service {
     private static volatile WorkerService running;
     private final AtomicBoolean closed=new AtomicBoolean();
-    private final AtomicReference<Job> active=new AtomicReference<>();
+    private final java.util.concurrent.ConcurrentHashMap<Integer,Slot> slots=new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile int target=1;
+    private volatile boolean updating;
+    private volatile JSONObject execution=new JSONObject();
+    private final Admission admission=new Admission();
     private final Object wake=new Object();
-    private final ExecutorService threads=Executors.newFixedThreadPool(2);
+    private final ExecutorService threads=Executors.newCachedThreadPool();
     private Store store;
-    private final WorkerConnection connection=new WorkerConnection();
+    
     static final class Job {
         final JSONObject payload;final AtomicBoolean cancelled=new AtomicBoolean();volatile boolean leaseLost;volatile String progress="{}";volatile long nextHeartbeat;volatile NetworkOperations network;
         Job(JSONObject p){payload=p;}
@@ -41,15 +45,22 @@ public final class WorkerService extends Service {
         try {c.startForegroundService(new Intent(c,WorkerService.class));}
         catch(RuntimeException e){Store.get(c).setState("worker_state","start_required");Store.get(c).setState("last_error","foreground_start_restricted");}
     }
-    static void cancelCurrent(){WorkerService s=running;if(s!=null){Job j=s.active.get();if(j!=null)j.cancel();}}
+    static void cancelCurrent(){WorkerService s=running;if(s!=null){for(Slot slot:s.slots.values()){Job j=slot.active.get();if(j!=null)j.cancel();}}}
     @Override public IBinder onBind(Intent intent){return null;}
-    @Override public void onCreate(){super.onCreate();store=Store.get(this);notification();running=this;threads.execute(this::workLoop);threads.execute(this::heartbeatLoop);}
+    @Override public void onCreate(){super.onCreate();store=Store.get(this);notification();running=this;startSlot(0);if(Store.get(this,1).hasWork())startSlot(1);threads.execute(this::monitor);}
     @Override public int onStartCommand(Intent intent,int flags,int id){notification();signal();return START_STICKY;}
     private void notification() {
         NotificationManager manager=getSystemService(NotificationManager.class);NotificationChannel channel=new NotificationChannel("fleet_worker","Fleet Worker",NotificationManager.IMPORTANCE_MIN);channel.setShowBadge(false);manager.createNotificationChannel(channel);
         Notification notification=new Notification.Builder(this,"fleet_worker").setSmallIcon(R.drawable.ic_worker).setContentTitle("Fleet Worker").setContentText("Фоновая обработка заданий").setOngoing(true).setCategory(Notification.CATEGORY_SERVICE).build();
         if(Build.VERSION.SDK_INT>=34)startForeground(1,notification,ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);else startForeground(1,notification);
     }
+    private synchronized void startSlot(int id){if(slots.containsKey(id))return;Slot slot=new Slot(id);slots.put(id,slot);threads.execute(slot::workLoop);threads.execute(slot::heartbeatLoop);}
+    private boolean anyWork(){for(Slot s:slots.values())if(s.claiming||s.active.get()!=null||s.store.hasWork())return true;return false;}
+    private JSONObject advertised()throws Exception{JSONObject p=new JSONObject(execution.toString());if(updating)p.put("max_concurrent_jobs",0);return p;}
+    private void monitor(){android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);while(!closed.get()){try{int n=0;for(Slot s:slots.values())if(s.active.get()!=null)n++;execution=admission.sample(this,n);target=execution.getInt("max_concurrent_jobs");store.setState("execution_budget",execution.toString());store.setState("parallel_jobs",Integer.toString(n));if(target>1)startSlot(1);pause(2000);}catch(InterruptedException e){Thread.currentThread().interrupt();return;}catch(Exception e){target=1;pauseQuiet(2000);}}}
+    private final class Slot{
+        final int slotId;final Store store;final WorkerConnection connection=new WorkerConnection();final AtomicReference<Job> active=new AtomicReference<>();volatile boolean claiming;
+        Slot(int id){slotId=id;store=Store.get(WorkerService.this,id);}
     private void workLoop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
         long backoff=1000;
@@ -60,19 +71,21 @@ public final class WorkerService extends Service {
                 if(api.flushEffect()){backoff=1000;continue;}
                 if(flushCompletion(api)) {backoff=1000;continue;}
                 JSONObject pending=store.current();if(pending!=null){runJob(api,config,pending);backoff=1000;continue;}
-                if(!admitted()){store.setState("worker_state","paused_resources");pause(5000);continue;}
+                if((updating&&slotId!=0)||slotId>=target||!admitted()){store.setState("worker_state","paused_resources");pause(5000);continue;}
                 long now=System.currentTimeMillis(),last=parseLong(store.getState("last_update_check","0")),interval=parseLong(store.getState("update_poll_seconds","900"))*1000;
-                if(store.getState("update_requested","false").equals("true") || now-last>=interval) {
+                if(slotId==0&&(store.getState("update_requested","false").equals("true") || now-last>=interval)) {
+                    updating=true;if(anyWork()){pause(1000);continue;}
                     store.setState("update_requested","false");store.setState("last_update_check",Long.toString(now));
-                    try {new Updater(this,store).check(config);}catch(Exception e){store.setState("update_state","check_failed");store.setState("last_error","update_check_failed");}
+                    try {new Updater(WorkerService.this,store).check(config);}catch(Exception e){store.setState("update_state","check_failed");store.setState("last_error","update_check_failed");}
                     if(store.getState("update_state","").equals("committing")){pause(1000);continue;}
+                    updating=false;
                 }
                 if(UpdatePolicy.blocksClaims(store.getState("update_state",""))) {
-                    try{new Updater(this,store).check(config);}catch(Exception e){store.setState("last_error","update_reconcile_failed");}
+                    try{new Updater(WorkerService.this,store).check(config);}catch(Exception e){store.setState("last_error","update_reconcile_failed");}
                     if(UpdatePolicy.blocksClaims(store.getState("update_state",""))){store.setState("worker_state","updating");pause(1000);continue;}
                 }
                 store.setState("worker_state","idle");
-                JSONObject response=api.post("/v1/jobs/claim",new JSONObject().put("worker_id",config.workerId).put("capabilities",capabilities()));
+                JSONObject response;claiming=true;try{if(updating&&slotId!=0)continue;response=api.post("/v1/jobs/claim",new JSONObject().put("worker_id",config.workerId).put("capabilities",capabilities()).put("slot_id",slotId));}finally{claiming=false;}
                 if(response==null){if(!api.claimWaitApplied)pause(5000);continue;}
                 JSONObject job=response.getJSONObject("job");job.getString("id");job.getString("attempt_id");job.get("fencing_token");
                 store.claimed(job);backoff=1000;
@@ -80,7 +93,7 @@ public final class WorkerService extends Service {
             catch(Exception e){invalidateRejectedConnection(e);store.setState("last_error",connectionError(e,"worker_retry"));store.setState("worker_state","waiting_connection");pauseQuiet(backoff);backoff=Math.min(60000,backoff*2);}
         }
     }
-    private Api api(Configuration configuration){return new Api(configuration,store,capabilities(),caps->WorkerProfile.collect(this,caps));}
+    private Api api(Configuration configuration){return new Api(configuration,store,capabilities(),caps->WorkerProfile.collect(WorkerService.this,caps,advertised()));}
     private Configuration connectedConfiguration()throws Exception {
         return connection.ensure(new WorkerConnection.Persistence(){
             @Override public Configuration load(){return Configuration.load(WorkerService.this);}
@@ -113,7 +126,7 @@ public final class WorkerService extends Service {
                     @Override public void checkpoint(String json){store.checkpoint(payload.optString("id"),json);control.progress=json;}
                     @Override public void progress(String json){control.progress=json;}
                 };
-                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"),store.artifacts(payload.getString("id")),ids->store.artifacts(payload.optString("id"),ids),ProxyConfiguration.load(this));
+                control.network=new NetworkOperations(api.networkGateway(payload,control.cancelled::get),control.cancelled::get,callbacks,payload.optJSONObject("network"),store.artifacts(payload.getString("id")),ids->store.artifacts(payload.optString("id"),ids),ProxyConfiguration.load(WorkerService.this));
                 result=Operations.execute(payload,store.checkpoint(payload.getString("id")),control.cancelled::get,callbacks,control.network);
             }catch(CancellationException e){
                 if(closed.get())return;if(control.leaseLost){store.abandonCurrent(payload.getString("id"));return;}
@@ -172,11 +185,12 @@ public final class WorkerService extends Service {
         if(memory.lowMemory || memory.availMem<=memory.threshold)return false;
         return Build.VERSION.SDK_INT<29 || getSystemService(PowerManager.class).getCurrentThermalStatus()<PowerManager.THERMAL_STATUS_SEVERE;
     }
+    }
     static JSONArray capabilities(){return new JSONArray().put("sha256").put("text.normalize").put("javascript").put("javascript.portable.v1").put("http.request").put("artifact.stream").put("proxy.egress.v1");}
     private static String path(String id)throws Exception{return URLEncoder.encode(id,"UTF-8");}
     private static long parseLong(String s){try{return Long.parseLong(s);}catch(NumberFormatException e){return 0;}}
     private void signal(){synchronized(wake){wake.notifyAll();}}
     private void pause(long millis)throws InterruptedException {synchronized(wake){wake.wait(millis);}}
     private void pauseQuiet(long millis){try{pause(millis);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
-    @Override public void onDestroy(){closed.set(true);Job job=active.get();if(job!=null)job.cancel();signal();threads.shutdownNow();running=null;super.onDestroy();}
+    @Override public void onDestroy(){closed.set(true);for(Slot slot:slots.values()){Job job=slot.active.get();if(job!=null)job.cancel();}signal();threads.shutdownNow();running=null;super.onDestroy();}
 }

@@ -303,3 +303,12 @@ Upstream runtime: https://github.com/mozilla/rhino (MPL-2.0).
 Claims use `Prefer: wait=20`: the gateway wakes the request as soon as work is committed. A supported long-poll response has no additional five-second delay; older gateways retain the existing fallback. Fully consumed control responses return their connections to the platform pool.
 
 The APK targets API36 while retaining minSdk26. This meets the silent self-update target requirement on API37 devices; APK certificate and signed-manifest checks remain mandatory.
+
+### Owner-first parallel admission
+
+Execution slots share one worker identity and keep independent durable SQLite
+state. Battery operation and an interactive foreground remain single-slot.
+An idle charging device may admit two light jobs when measured CPU, memory
+and thermal conditions permit. Heat or memory pressure pauses new admission;
+unknown CPU telemetry stays single-slot. Threads use Android's background
+priority. Live jobs retain their lease/checkpoint/outbox during a budget shrink.

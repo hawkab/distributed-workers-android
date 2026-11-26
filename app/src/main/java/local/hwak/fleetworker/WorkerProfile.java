@@ -14,7 +14,8 @@ import org.json.JSONObject;
 /** Resource quantities only. Device/model/host/serial identifiers are never inspected. */
 final class WorkerProfile {
     private WorkerProfile() {}
-    static String collect(Context context,JSONArray capabilities)throws Exception {
+    static String collect(Context context,JSONArray capabilities)throws Exception {return collect(context,capabilities,null);}
+    static String collect(Context context,JSONArray capabilities,JSONObject execution)throws Exception {
         Integer cores=null;Double availableCores=null;Long totalRam=null,availableRam=null,totalDisk=null,availableDisk=null;
         Runtime runtime=Runtime.getRuntime();
         int processors=runtime.availableProcessors();
@@ -36,7 +37,7 @@ final class WorkerProfile {
             if(state.getTotalBytes()>0)totalDisk=state.getTotalBytes();
             if(state.getAvailableBytes()>=0)availableDisk=state.getAvailableBytes();
         }catch(RuntimeException ignored){}
-        return encode(document(capabilities,cores,availableCores,totalRam,availableRam,totalDisk,availableDisk));
+        JSONObject p=document(capabilities,cores,availableCores,totalRam,availableRam,totalDisk,availableDisk);if(execution!=null)p.put("execution",new JSONObject(execution.toString()));return encode(p);
     }
     static Long availableMemory(Long osAvailable,long heapMaximum,long heapAllocated,long heapFree) {
         if(heapMaximum<=0||heapAllocated<0||heapFree<0||heapFree>heapAllocated)return osAvailable;

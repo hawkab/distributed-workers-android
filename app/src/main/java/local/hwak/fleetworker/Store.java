@@ -9,9 +9,11 @@ import org.json.JSONObject;
 import org.json.JSONArray;
 
 final class Store extends SQLiteOpenHelper {
-    private static Store instance;
-    static synchronized Store get(Context c) { if (instance == null) instance = new Store(c.getApplicationContext()); return instance; }
-    private Store(Context c) { super(c, "worker.db", null, 1); setWriteAheadLoggingEnabled(true); }
+    private static final java.util.Map<Integer,Store> instances=new java.util.HashMap<>();
+    static synchronized Store get(Context c) { return get(c,0); }
+    static synchronized Store get(Context c,int slot) { return instances.computeIfAbsent(slot,k->new Store(c.getApplicationContext(),k)); }
+    static synchronized boolean hasAnyWork(Context c) { for(int i=0;i<2;i++)if(get(c,i).hasWork())return true;return false; }
+    private Store(Context c,int slot) { super(c, slot==0?"worker.db":"worker-slot-"+slot+".db", null, 1); setWriteAheadLoggingEnabled(true); }
     @Override public void onConfigure(SQLiteDatabase db) { db.execSQL("PRAGMA synchronous=FULL"); }
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE current_job(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload TEXT NOT NULL)");
@@ -76,7 +78,7 @@ final class Store extends SQLiteOpenHelper {
             try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM outbox",null)){if(c.moveToFirst())o.put("outbox",c.getInt(0));}
             try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM state WHERE name GLOB 'effect_finish:*'",null)){if(c.moveToFirst())o.put("effect_outbox",c.getInt(0));}
             try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM state WHERE name GLOB 'effect_rejected:*'",null)){if(c.moveToFirst())o.put("effect_delivery_rejected",c.getInt(0));}
-            for(String key:new String[]{"worker_state","last_error","last_job_id","last_job_status","update_state","update_version","update_session","update_source","update_source_state","update_poll_seconds","last_update_check","last_heartbeat_at"})o.put(key,getState(key,""));
+            for(String key:new String[]{"worker_state","last_error","last_job_id","last_job_status","update_state","update_version","update_session","update_source","update_source_state","update_poll_seconds","last_update_check","last_heartbeat_at","execution_budget","parallel_jobs"})o.put(key,getState(key,""));
         }catch(Exception ignored){ }
         return o;
     }

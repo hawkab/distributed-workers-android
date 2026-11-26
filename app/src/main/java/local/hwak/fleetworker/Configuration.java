@@ -29,14 +29,14 @@ final class Configuration {
             Configuration old=load(c);
             String id=workerId.isEmpty()&&old!=null&&old.baseUrl.equals(baseUrl)?old.workerId:workerId;
             Configuration next=new Configuration(baseUrl,id,token);
-            ensurePendingIdentity(old,next,Store.get(c).hasWork());
+            ensurePendingIdentity(old,next,Store.hasAnyWork(c));
             persist(c,next);
         }
     }
     static synchronized Configuration acceptServerId(Context c,Configuration expected,String assigned) {
         Configuration current=load(c);
         if(!expected.sameIdentity(current))throw new IllegalStateException("configuration_changed_during_connect");
-        Configuration confirmed=confirmed(expected,assigned,Store.get(c).hasWork());
+        Configuration confirmed=confirmed(expected,assigned,Store.hasAnyWork(c));
         persist(c,confirmed);
         return confirmed;
     }
