@@ -116,4 +116,30 @@ public class NetworkOperationsTest {
         Object result=Operations.javascript("function run(input,resume,ctx){ctx.checkpoint({n:resume.n});ctx.progress({ok:true});return ctx.http.request({effect_id:'x',url:input.url});}",new JSONObject().put("url","https://source.example.invalid"),"{\"n\":7}",()->false,NOOP,spec->new JSONObject().put("status",200).put("body_text",spec.getString("url")));
         assertEquals("https://source.example.invalid",((JSONObject)result).getString("body_text"));
     }
+    @Test public void failedReadReturnsRedactedTerminalCodeEvenThroughScriptWrapper() throws Exception {
+        Sink sink = new Sink();
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST));
+            server.start();
+            try (NetworkOperations net = new NetworkOperations(sink, () -> false, NOOP, null)) {
+                try {
+                    net.request(request(server.url("/private-sample").toString()));
+                    fail("transport failure completed successfully");
+                } catch (NetworkOperations.SourceUnavailable e) {
+                    assertEquals("network_transport_unavailable", WorkerService.executionFailureCode(new Exception("script wrapper", e)));
+                }
+            }
+            assertEquals(1, server.getRequestCount());
+        }
+        assertEquals("effect_uncertain", WorkerService.executionFailureCode(new Exception(new IllegalStateException("effect_uncertain"))));
+    }
+    @Test public void directControlRequiresExactConfiguredHttpsEndpointAndNoRedirects() {
+        String endpoint = "https://coordinator.example/fleet/v1/resource-permit";
+        assertTrue(NetworkOperations.isCoordinatorPermit(okhttp3.HttpUrl.get(endpoint), "POST", "manual", endpoint));
+        for (String other : new String[]{endpoint + "?next=x", endpoint + "/other", endpoint.replace("coordinator", "another"), endpoint.replace("https:", "http:")}) {
+            assertFalse(NetworkOperations.isCoordinatorPermit(okhttp3.HttpUrl.get(other), "POST", "manual", endpoint));
+        }
+        assertFalse(NetworkOperations.isCoordinatorPermit(okhttp3.HttpUrl.get(endpoint), "POST", "follow", endpoint));
+        assertFalse(NetworkOperations.isCoordinatorPermit(okhttp3.HttpUrl.get(endpoint), "GET", "manual", endpoint));
+    }
 }

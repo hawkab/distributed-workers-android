@@ -47,7 +47,7 @@ public class TaskProxiesTest {
     @Test public void requiredMissingRouteDoesNotTryOriginAndCompletedEffectStillReplays()throws Exception {
         try(MockWebServer origin=new MockWebServer()) {
             origin.start();NetworkOperationsTest.Sink sink=new NetworkOperationsTest.Sink();TaskProxies proxies=pool(new JSONObject().put("mode","required"));
-            try(NetworkOperations net=network(sink,proxies)){try{net.request(NetworkOperationsTest.request(origin.url("/never-direct").toString()));fail();}catch(NetworkOperations.Retryable expected){}}
+            try(NetworkOperations net=network(sink,proxies)){try{net.request(NetworkOperationsTest.request(origin.url("/never-direct").toString()));fail();}catch(NetworkOperations.SourceUnavailable expected){}}
             assertEquals(0,origin.getRequestCount());sink.cached=new JSONObject().put("status",204);
             try(NetworkOperations net=network(sink,proxies)){assertEquals(204,net.request(NetworkOperationsTest.request(origin.url("/replay").toString())).getInt("status"));}
             assertEquals(0,origin.getRequestCount());
@@ -56,7 +56,7 @@ public class TaskProxiesTest {
     @Test public void missingProxyDoesNotReserveNewNeverIntentAndCompletedStatusStillValidatesRequestHash()throws Exception {
         AtomicInteger begins=new AtomicInteger(),uploads=new AtomicInteger();TaskProxies required=pool(new JSONObject().put("mode","required"));
         NetworkOperationsTest.Sink fresh=new NetworkOperationsTest.Sink(){@Override public JSONObject begin(String e,String x,JSONObject r)throws Exception{begins.incrementAndGet();return super.begin(e,x,r);}@Override public String create(String k,String n,String m)throws Exception{uploads.incrementAndGet();return super.create(k,n,m);}};
-        try(NetworkOperations net=network(fresh,required)){try{net.request(NetworkOperationsTest.request("http://127.0.0.1:1/no-source").put("method","POST").put("replay","never"));fail();}catch(NetworkOperations.Retryable expected){}}
+        try(NetworkOperations net=network(fresh,required)){try{net.request(NetworkOperationsTest.request("http://127.0.0.1:1/no-source").put("method","POST").put("replay","never"));fail();}catch(NetworkOperations.SourceUnavailable expected){}}
         assertEquals(0,begins.get());assertEquals(0,uploads.get());
         fresh.cached=new JSONObject().put("status",202);
         try(NetworkOperations net=network(fresh,required)){assertEquals(202,net.request(NetworkOperationsTest.request("http://127.0.0.1:1/no-source")).getInt("status"));}assertEquals(1,begins.get());
@@ -121,7 +121,7 @@ public class TaskProxiesTest {
         try(MockWebServer origin=new MockWebServer();ServerSocket listener=new ServerSocket(0)) {
             origin.useHttps(serverTls.sslSocketFactory(),false);origin.start();
             CompletableFuture<Void> tunnel=CompletableFuture.runAsync(()->{try(Socket incoming=listener.accept();Socket target=new Socket("127.0.0.1",origin.getPort())){head(incoming);incoming.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.US_ASCII));CompletableFuture<Void> upstream=CompletableFuture.runAsync(()->copy(incoming,target));copy(target,incoming);upstream.join();}catch(Exception e){throw new RuntimeException(e);}});
-            try(NetworkOperations net=network(new NetworkOperationsTest.Sink(),pool(config("http://127.0.0.1:"+listener.getLocalPort())))){try{net.request(NetworkOperationsTest.request(origin.url("/not-trusted").toString()));fail();}catch(NetworkOperations.Retryable expected){}}
+            try(NetworkOperations net=network(new NetworkOperationsTest.Sink(),pool(config("http://127.0.0.1:"+listener.getLocalPort())))){try{net.request(NetworkOperationsTest.request(origin.url("/not-trusted").toString()));fail();}catch(NetworkOperations.SourceUnavailable expected){}}
             assertEquals(0,origin.getRequestCount());tunnel.get(5,TimeUnit.SECONDS);
         }
     }

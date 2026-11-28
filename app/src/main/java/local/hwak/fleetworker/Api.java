@@ -51,6 +51,7 @@ final class Api {
     NetworkOperations.Gateway networkGateway(JSONObject job,BooleanSupplier cancelled) {
         if(config.workerId.isEmpty())throw new IllegalStateException("worker_not_connected");
         return new NetworkOperations.Gateway() {
+            @Override public String resourcePermitEndpoint() { return config.baseUrl + "/v1/resource-permit"; }
             private volatile HttpsURLConnection active;
             private JSONObject identity()throws Exception{return new JSONObject().put("worker_id",config.workerId).put("attempt_id",job.getString("attempt_id")).put("fencing_token",job.get("fencing_token"));}
             private String effect(String id)throws Exception{return "/v1/jobs/"+encode(job.getString("id"))+"/effects/"+encode(id);}

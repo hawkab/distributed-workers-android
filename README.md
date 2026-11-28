@@ -39,7 +39,7 @@ included Gradle wrapper:
 
 ```
 JAVA_HOME=/path/to/jdk21 ./gradlew :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease \
-  -PworkerVersionCode=15 -PworkerVersionName=0.7.2
+  -PworkerVersionCode=17 -PworkerVersionName=0.8.1
 ```
 
 Builds require no production configuration or secrets. `preparePublicAssets`

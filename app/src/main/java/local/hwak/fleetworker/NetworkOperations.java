@@ -34,8 +34,13 @@ import org.mozilla.javascript.ScriptableObject;
 /** The portable synchronous HTTP host. Only control JSON and one bounded chunk live locally. */
 final class NetworkOperations implements Operations.Network, AutoCloseable {
     static final int CHUNK_BYTES=1024*1024;
-    static final class Retryable extends java.io.IOException { Retryable(){super("network_transport_retry");} }
+    // External I/O failed. A different worker may be able to run the job.
+    // Keep its description free of source URLs, credentials and device details.
+    static final class SourceUnavailable extends java.io.IOException {
+        SourceUnavailable() { super("network_transport_unavailable"); }
+    }
     interface Gateway {
+        default String resourcePermitEndpoint() { return ""; }
         default JSONObject status(String effect)throws Exception{return null;}
         JSONObject begin(String effect,String execution,JSONObject request)throws Exception;
         void finish(String effect,String execution,String requestHash,JSONObject response,JSONArray artifacts)throws Exception;
@@ -121,18 +126,21 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
         }
         builder.proxy(java.net.Proxy.NO_PROXY);Set<String> visited=new HashSet<>();
         String execution=UUID.randomUUID().toString();TaskProxies.Endpoint selected=null;
-        JSONObject prior=proxies.required()?gateway.status(effect):null;
+        // Only the configured coordinator's own HTTPS control endpoint is
+        // eligible for direct control traffic. Data-plane policy still applies.
+        boolean coordinator = isCoordinatorPermit(url, method, redirect, gateway.resourcePermitEndpoint());
+        JSONObject prior=proxies.required() && !coordinator ? gateway.status(effect) : null;
         // Completed remote effects must still pass BEGIN's request-hash validation.
         // A new never effect is not reserved until a task route is available.
         boolean existingNoDispatch=prior!=null&&(prior.optString("state").equals("completed")||replay.equals("never"));
-        if(!existingNoDispatch)try{selected=proxies.select(System.currentTimeMillis());}catch(java.io.IOException unavailable){throw new Retryable();}
+        if(!existingNoDispatch && !coordinator)try{selected=proxies.select(System.currentTimeMillis());}catch(java.io.IOException unavailable){throw new SourceUnavailable();}
         JSONObject begin=gateway.begin(effect,execution,original);
         String state=begin.getString("state");
         if(state.equals("completed")){JSONObject saved=begin.getJSONObject("response");remember(saved);return saved;}
         if(!state.equals("execute"))throw new IllegalStateException("effect_uncertain");
         String requestHash=begin.getString("request_sha256");
         try {
-            if(existingNoDispatch)selected=proxies.select(System.currentTimeMillis());if(selected!=null)selected.apply(builder);
+            if(existingNoDispatch && !coordinator)selected=proxies.select(System.currentTimeMillis());if(selected!=null)selected.apply(builder);
             OkHttpClient client=builder.build();
             while(true) {
                 check();validate(url,method,headers,mode);
@@ -175,9 +183,14 @@ final class NetworkOperations implements Operations.Network, AutoCloseable {
                 }
             }
         }catch(Api.Failure e){throw e;}
-        catch(java.io.IOException e){check();proxies.failed(selected);if(replay.equals("safe")||replay.equals("idempotent"))throw new Retryable();throw new IllegalStateException("effect_uncertain",e);}
+        catch(java.io.IOException e){check();proxies.failed(selected);if(replay.equals("safe")||replay.equals("idempotent"))throw new SourceUnavailable();throw new IllegalStateException("effect_uncertain",e);}
         finally{activeCall=null;}
     }
+    static boolean isCoordinatorPermit(HttpUrl url, String method, String redirect, String configuredEndpoint) {
+        return url.isHttps() && method.equals("POST") && redirect.equals("manual")
+                && url.toString().equals(configuredEndpoint);
+    }
+
     private static long nonnegative(JSONObject o,String name)throws Exception {long value=o.getLong(name);if(value<0)throw new IllegalArgumentException("invalid_timeout");return value;}
     private void inline(InputStream source,JSONObject result,String mode,long max,String key,String name,String media,String execution,String requestHash)throws Exception {
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[8192];int n;

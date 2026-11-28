@@ -58,6 +58,15 @@ public final class WorkerService extends Service {
     private boolean anyWork(){for(Slot s:slots.values())if(s.claiming||s.active.get()!=null||s.store.hasWork())return true;return false;}
     private JSONObject advertised()throws Exception{JSONObject p=new JSONObject(execution.toString());if(updating)p.put("max_concurrent_jobs",0);return p;}
     private void monitor(){android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);while(!closed.get()){try{int n=0;for(Slot s:slots.values())if(s.active.get()!=null)n++;execution=admission.sample(this,n);target=execution.getInt("max_concurrent_jobs");store.setState("execution_budget",execution.toString());store.setState("parallel_jobs",Integer.toString(n));if(target>1)startSlot(1);pause(2000);}catch(InterruptedException e){Thread.currentThread().interrupt();return;}catch(Exception e){target=1;pauseQuiet(2000);}}}
+    static String executionFailureCode(Exception error) {
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Throwable cause = error; cause != null && seen.add(cause); cause = cause.getCause()) {
+            if (cause instanceof NetworkOperations.SourceUnavailable) return "network_transport_unavailable";
+            if ("effect_uncertain".equals(cause.getMessage())) return "effect_uncertain";
+        }
+        return "execution_" + error.getClass().getSimpleName();
+    }
+
     private final class Slot{
         final int slotId;final Store store;final WorkerConnection connection=new WorkerConnection();final AtomicReference<Job> active=new AtomicReference<>();volatile boolean claiming;
         Slot(int id){slotId=id;store=Store.get(WorkerService.this,id);}
@@ -131,7 +140,13 @@ public final class WorkerService extends Service {
             }catch(CancellationException e){
                 if(closed.get())return;if(control.leaseLost){store.abandonCurrent(payload.getString("id"));return;}
                 saveCompletion(config,payload,"failed",JSONObject.NULL,"cancelled");return;
-            }catch(Exception e){if(closed.get())return;Throwable cause=e;java.util.Set<Throwable> seen=java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());while(cause!=null&&seen.add(cause)){if(cause instanceof NetworkOperations.Retryable)throw (NetworkOperations.Retryable)cause;if("effect_uncertain".equals(cause.getMessage())){saveCompletion(config,payload,"failed",JSONObject.NULL,"effect_uncertain");return;}cause=cause.getCause();}saveCompletion(config,payload,"failed",JSONObject.NULL,"execution_"+e.getClass().getSimpleName());return;}
+            } catch (Exception e) {
+                if (closed.get()) return;
+                // Store the terminal attempt before releasing the slot. A control
+                // outage retries this receipt without executing the task again.
+                saveCompletion(config, payload, "failed", JSONObject.NULL, executionFailureCode(e));
+                return;
+            }
             catch(StackOverflowError e){if(closed.get())return;saveCompletion(config,payload,"failed",JSONObject.NULL,"script_stack_exhausted");return;}
             catch(OutOfMemoryError e){if(closed.get())return;saveCompletion(config,payload,"failed",JSONObject.NULL,"script_memory_exhausted");return;}
             if(!closed.get())saveCompletion(config,payload,"succeeded",result,null);
