@@ -143,9 +143,12 @@ Operations:
   There is no overall HTTP/job deadline.
   Explicit cancellation closes a stalled source connection.
 
-Use stable `effect_id` values for every `ctx.http.request` call. GET/HEAD may
-retry after a transport failure; writes default to `never` and an uncertain
-write is not automatically repeated. Vendor-supported idempotent writes require
+Use stable `effect_id` values for every `ctx.http.request` call. If a safe
+or idempotent upstream request loses its connection, Android completes the
+attempt with `network_transport_unavailable`. The producer can retry or
+choose another worker. The local outbox delivers the completion when the
+coordinator is reachable. Writes use `never` by default and an uncertain
+write retains its `effect_uncertain` status. Vendor-supported idempotent writes require
 its key. The effect journal reuses a completed response across worker attempts.
 Before acknowledging an HTTP result, Android persists its small response metadata
 in a SQLite effect outbox. Restart recovery delivers the same finish request
